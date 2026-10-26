@@ -39,9 +39,15 @@ create table if not exists connections (
   name text not null,
   kind text not null,
   portal_url text not null,
+  username text not null default '',
   status text not null default 'unconfigured',
   created_at timestamptz not null default now()
 );
+
+alter table connections add column if not exists username text not null default '';
+
+create unique index if not exists connections_portal_username_idx
+  on connections (portal_url, lower(username));
 
 create table if not exists migration_jobs (
   id uuid primary key default gen_random_uuid(),

@@ -45,7 +45,7 @@ export function PanelMessage({
 }
 
 export function StatusPill({ value }: { value: string }) {
-  const quiet = value === 'active' || value === 'ready' || value === 'succeeded'
+  const quiet = value === 'active' || value === 'ready' || value === 'succeeded' || value === 'connected'
   return (
     <span
       className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${

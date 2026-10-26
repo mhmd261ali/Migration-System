@@ -63,6 +63,7 @@ export type ConnectionRow = {
   name: string
   kind: string
   portal_url: string
+  username: string
   status: string
   created_at: string
 }

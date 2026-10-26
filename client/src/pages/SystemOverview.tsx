@@ -1,9 +1,10 @@
+import { type FormEvent, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useSession } from '../auth/AuthProvider'
-import { useApi } from '../api'
+import { api, useApi } from '../api'
 import { PageHeader, PanelMessage } from '../components/ui'
 import { formatWhen } from '../format'
-import type { OverviewResponse } from '../types'
+import type { ConnectionRow, ListResponse, OverviewResponse } from '../types'
 
 const cards = [
   { key: 'users', label: 'Users', to: '/users', caption: 'People recorded' },
@@ -22,6 +23,8 @@ export function SystemOverview() {
         title="System Overview"
         description="A reading of this console right now: the signed-in account, whether Postgres and Keycloak are reachable, and what has been recorded."
       />
+
+      <ConnectionBar />
 
       {error && (
         <PanelMessage title="The overview could not be loaded." body={error} onRetry={reload} />
@@ -100,6 +103,191 @@ export function SystemOverview() {
       </div>
       </>
       )}
+    </div>
+  )
+}
+
+const portalStorageKey = 'migration.portal'
+
+function ConnectionBar() {
+  const query = useApi<ListResponse<ConnectionRow>>('/connections')
+  const items = query.data?.items ?? []
+  const portals = uniquePortals(items)
+  const [selectedId, setSelectedId] = useState(() => localStorage.getItem(portalStorageKey) ?? '')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [connectError, setConnectError] = useState<string>()
+  const [attempt, setAttempt] = useState<'connected' | 'failed' | null>(null)
+  const [success, setSuccess] = useState<{ portal: string; at: number }>()
+  const selected = items.find((row) => row.id === selectedId) ?? items[0]
+  const connected = attempt === 'connected' || (attempt !== 'failed' && selected?.status === 'connected')
+  const portalUsers = selected
+    ? items
+        .filter((row) => row.portal_url === selected.portal_url)
+        .slice()
+        .sort((a, b) => a.username.localeCompare(b.username))
+    : []
+
+  useEffect(() => {
+    const match = items.find((row) => row.id === selectedId)
+    if (match) {
+      localStorage.setItem(portalStorageKey, match.id)
+      return
+    }
+    if (!query.loading && items[0] && selectedId !== items[0].id) {
+      setSelectedId(items[0].id)
+    }
+  }, [items, query.loading, selectedId])
+
+  useEffect(() => {
+    setAttempt(null)
+  }, [selected?.id])
+
+  function choose(id: string) {
+    setSelectedId(id)
+    setPassword('')
+    setConnectError(undefined)
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!selected) return
+    setBusy(true)
+    setConnectError(undefined)
+    try {
+      await api(`/connections/${selected.id}/connect`, {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      })
+      setPassword('')
+      setAttempt('connected')
+      setSuccess({ portal: selected.portal_url, at: Date.now() })
+      query.reload()
+    } catch (reason) {
+      setAttempt('failed')
+      setConnectError(reason instanceof Error ? reason.message : 'Could not connect.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="relative mb-6 rounded-xl border border-line bg-card px-5 py-4 pr-12">
+      <span
+        className="absolute top-4 right-4 flex h-2.5 w-2.5"
+        title={connected ? 'Connected' : 'Not connected'}
+        aria-label={connected ? 'Connected' : 'Not connected'}
+      >
+        <span
+          className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${connected ? 'bg-green-600' : 'bg-red-600'}`}
+        />
+        <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${connected ? 'bg-green-600' : 'bg-red-600'}`} />
+      </span>
+      {success && (
+        <SuccessNotice key={success.at} portal={success.portal} onClose={() => setSuccess(undefined)} />
+      )}
+      {query.loading && <p className="text-sm text-muted">Loading connection.</p>}
+      {query.error && <p className="text-sm leading-relaxed text-danger">{query.error}</p>}
+      {!query.loading && !query.error && items.length === 0 && (
+        <p className="text-sm leading-relaxed text-muted">
+          No connection yet.{' '}
+          <Link to="/connections" className="font-medium text-teal">
+            Add one
+          </Link>
+        </p>
+      )}
+      {selected && (
+        <form onSubmit={submit} className="grid gap-3 md:grid-cols-3 md:items-end">
+          <label className="block min-w-0">
+            <span className="text-sm text-muted">Portal</span>
+            <select
+              value={selected.portal_url}
+              onChange={(event) => {
+                const next = items.find((row) => row.portal_url === event.target.value)
+                if (next) choose(next.id)
+              }}
+              className="mt-1.5 w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink"
+            >
+              {portals.map((portal) => (
+                <option key={portal} value={portal}>
+                  {portal}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block min-w-0">
+            <span className="text-sm text-muted">User</span>
+            <select
+              value={selected.id}
+              onChange={(event) => choose(event.target.value)}
+              className="mt-1.5 w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink"
+            >
+              {portalUsers.map((user) => (
+                <option key={user.id} value={user.id}>
+                  {user.username || '—'}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block min-w-0">
+            <span className="text-sm text-muted">Password</span>
+            <span className="mt-1.5 flex gap-2">
+              <input
+                required
+                type="password"
+                name="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                className="min-w-0 flex-1 rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink"
+              />
+              <button
+                type="submit"
+                disabled={busy}
+                className="rounded-lg bg-teal px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+              >
+                {busy ? 'Connecting…' : 'Connect'}
+              </button>
+            </span>
+          </label>
+        </form>
+      )}
+      {connectError && <p className="mt-3 text-sm leading-relaxed text-danger">{connectError}</p>}
+    </section>
+  )
+}
+
+function uniquePortals(items: ConnectionRow[]) {
+  const urls: string[] = []
+  for (const row of items) {
+    if (!urls.includes(row.portal_url)) urls.push(row.portal_url)
+  }
+  return urls
+}
+
+function SuccessNotice({ portal, onClose }: { portal: string; onClose: () => void }) {
+  return (
+    <div
+      role="status"
+      className="fixed top-16 right-4 z-50 w-64 rounded-xl border border-teal/30 bg-card px-3.5 py-3 shadow-[0_10px_28px_rgba(23,33,30,0.14)] md:top-4"
+    >
+      <div className="flex items-start gap-2.5">
+        <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-teal" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-ink">Connection successful</p>
+          <p className="mt-0.5 truncate font-mono text-[12px] text-muted" title={portal}>
+            {portal}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Dismiss"
+          className="text-lg leading-none text-muted hover:text-ink"
+        >
+          ×
+        </button>
+      </div>
     </div>
   )
 }

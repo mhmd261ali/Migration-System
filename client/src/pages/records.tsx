@@ -1,3 +1,5 @@
+import { type FormEvent, useState } from 'react'
+import { api } from '../api'
 import { StatusPill } from '../components/ui'
 import { blank, formatWhen } from '../format'
 import type { ActivityRow, ConnectionRow, ContentRow, GroupRow, JobRow, UserRow } from '../types'
@@ -111,13 +113,82 @@ export function ConnectionsPage() {
       singular="connection"
       plural="connections"
       empty="No connections configured yet."
+      banner={(reload) => <AddConnectionForm onAdded={reload} />}
       columns={[
         { header: 'Name', cell: (row) => row.name },
+        { header: 'Username', cell: (row) => row.username || '—' },
         { header: 'Kind', cell: (row) => row.kind },
         { header: 'Portal', cell: (row) => <span className="font-mono text-[13px]">{row.portal_url}</span> },
         { header: 'Status', cell: (row) => <StatusPill value={row.status} /> },
         { header: 'Added', cell: (row) => formatWhen(row.created_at) },
       ]}
     />
+  )
+}
+
+function AddConnectionForm({ onAdded }: { onAdded: () => void }) {
+  const [url, setUrl] = useState('')
+  const [username, setUsername] = useState('')
+  const [error, setError] = useState<string>()
+  const [saving, setSaving] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    setError(undefined)
+    try {
+      await api('/connections', {
+        method: 'POST',
+        body: JSON.stringify({ url, username: username.trim() }),
+      })
+      setUrl('')
+      setUsername('')
+      onAdded()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not add the connection.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="mb-6 rounded-xl border border-line bg-card px-5 py-4">
+      <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted">Add a connection</h2>
+      <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_auto] lg:items-end">
+        <label className="block">
+          <span className="text-sm text-muted">Portal</span>
+          <input
+            required
+            type="url"
+            name="url"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://portal.example.com/portal"
+            autoComplete="url"
+            className="mt-1.5 w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm text-muted">Username</span>
+          <input
+            required
+            type="text"
+            name="username"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            autoComplete="username"
+            className="mt-1.5 w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink"
+          />
+        </label>
+        <button
+          type="submit"
+          disabled={saving}
+          className="rounded-lg bg-teal px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+        >
+          {saving ? 'Adding…' : 'Add connection'}
+        </button>
+      </div>
+      {error && <p className="mt-3 text-sm leading-relaxed text-danger">{error}</p>}
+    </form>
   )
 }

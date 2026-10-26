@@ -17,6 +17,7 @@ export function RecordPage<T extends { id: string }>({
   plural,
   empty,
   columns,
+  banner,
 }: {
   title: string
   description: string
@@ -25,6 +26,7 @@ export function RecordPage<T extends { id: string }>({
   plural: string
   empty: string
   columns: Column<T>[]
+  banner?: (reload: () => void) => ReactNode
 }) {
   const query = useApi<ListResponse<T>>(path)
   const items = query.data?.items ?? []
@@ -32,6 +34,7 @@ export function RecordPage<T extends { id: string }>({
   return (
     <div className="mx-auto max-w-6xl">
       <PageHeader title={title} description={description} />
+      {banner?.(query.reload)}
       <p className="mb-3 text-sm text-muted">
         {query.loading ? 'Loading…' : countLabel(items.length, singular, plural)}
       </p>

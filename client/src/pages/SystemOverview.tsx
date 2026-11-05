@@ -4,18 +4,14 @@ import { useSession } from '../auth/AuthProvider'
 import { api, useApi } from '../api'
 import { PageHeader, PanelMessage } from '../components/ui'
 import { formatWhen } from '../format'
+import { OrganizationPanel } from './OrganizationPanel'
 import type { ConnectionRow, ListResponse, OverviewResponse } from '../types'
-
-const cards = [
-  { key: 'users', label: 'Users', to: '/users', caption: 'People recorded' },
-  { key: 'groups', label: 'Groups', to: '/groups', caption: 'Groups recorded' },
-  { key: 'content', label: 'Content', to: '/content', caption: 'Items recorded' },
-  { key: 'connections', label: 'Connections', to: '/connections', caption: 'Portals configured' },
-] as const
 
 export function SystemOverview() {
   const session = useSession()
   const { data, error, loading, reload } = useApi<OverviewResponse>('/overview')
+  const [portal, setPortal] = useState<string>()
+  const [refresh, setRefresh] = useState(0)
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -24,7 +20,15 @@ export function SystemOverview() {
         description="A reading of this console right now: the signed-in account, whether Postgres and Keycloak are reachable, and what has been recorded."
       />
 
-      <ConnectionBar />
+      <ConnectionBar
+        onPortal={setPortal}
+        onConnected={() => {
+          setRefresh((value) => value + 1)
+          reload()
+        }}
+      />
+
+      {portal && <OrganizationPanel key={portal} portal={portal} refresh={refresh} />}
 
       {error && (
         <PanelMessage title="The overview could not be loaded." body={error} onRetry={reload} />
@@ -32,24 +36,7 @@ export function SystemOverview() {
 
       {!error && (
       <>
-      <h2 className="mb-3 text-[11px] font-medium uppercase tracking-[0.14em] text-muted">Recorded</h2>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {cards.map((card) => (
-          <Link
-            key={card.key}
-            to={card.to}
-            className="rounded-xl border border-line bg-card px-4 py-4 transition hover:border-teal"
-          >
-            <p className="text-sm text-muted">{card.label}</p>
-            <p className="mt-2 text-3xl font-semibold tabular-nums tracking-tight text-ink">
-              {loading || !data ? '…' : data.counts[card.key]}
-            </p>
-            <p className="mt-2 text-xs text-muted">{card.caption}</p>
-          </Link>
-        ))}
-      </div>
-
-      <div className="mt-6 grid gap-3 lg:grid-cols-[1.15fr_0.85fr]">
+      <div className="grid gap-3 lg:grid-cols-[1.15fr_0.85fr]">
         <section className="rounded-xl border border-line bg-card px-5 py-2">
           <h2 className="pt-3 text-[11px] font-medium uppercase tracking-[0.14em] text-muted">Services</h2>
           <ServiceRow label="Signed in" value={session.name} />
@@ -109,7 +96,13 @@ export function SystemOverview() {
 
 const portalStorageKey = 'migration.portal'
 
-function ConnectionBar() {
+function ConnectionBar({
+  onPortal,
+  onConnected,
+}: {
+  onPortal: (portal: string | undefined) => void
+  onConnected: () => void
+}) {
   const query = useApi<ListResponse<ConnectionRow>>('/connections')
   const items = query.data?.items ?? []
   const portals = uniquePortals(items)
@@ -143,6 +136,10 @@ function ConnectionBar() {
     setAttempt(null)
   }, [selected?.id])
 
+  useEffect(() => {
+    onPortal(selected?.portal_url)
+  }, [selected?.portal_url])
+
   function choose(id: string) {
     setSelectedId(id)
     setPassword('')
@@ -152,17 +149,19 @@ function ConnectionBar() {
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!selected) return
+    const refresh = (event.nativeEvent as SubmitEvent).submitter?.getAttribute('name') === 'refresh'
     setBusy(true)
     setConnectError(undefined)
     try {
       await api(`/connections/${selected.id}/connect`, {
         method: 'POST',
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, refresh }),
       })
       setPassword('')
       setAttempt('connected')
       setSuccess({ portal: selected.portal_url, at: Date.now() })
       query.reload()
+      onConnected()
     } catch (reason) {
       setAttempt('failed')
       setConnectError(reason instanceof Error ? reason.message : 'Could not connect.')
@@ -243,10 +242,20 @@ function ConnectionBar() {
               />
               <button
                 type="submit"
+                name="connect"
                 disabled={busy}
                 className="rounded-lg bg-teal px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
               >
                 {busy ? 'Connecting…' : 'Connect'}
+              </button>
+              <button
+                type="submit"
+                name="refresh"
+                disabled={busy}
+                title="Sign in and read the organization from ArcGIS again"
+                className="rounded-lg border border-teal px-3 py-2 text-sm font-medium text-teal disabled:opacity-60"
+              >
+                Refresh data
               </button>
             </span>
           </label>

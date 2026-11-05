@@ -3,6 +3,7 @@ import { useAuthReady, useOptionalSession } from './auth/AuthProvider'
 import { AppShell } from './layout/AppShell'
 import { ChangeTrackingPage } from './pages/ChangeTrackingPage'
 import { HomePage } from './pages/HomePage'
+import { InformationPage } from './pages/InformationPage'
 import { OpeningConsole } from './pages/OpeningConsole'
 import {
   ConnectionsPage,
@@ -12,6 +13,7 @@ import {
   JobsPage,
   UsersOverview,
 } from './pages/records'
+import { ReportsPage } from './pages/ReportsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { StudioPage } from './pages/StudioPage'
 import { SystemOverview } from './pages/SystemOverview'
@@ -23,6 +25,8 @@ export function App() {
       <Route element={<RequireSession />}>
         <Route element={<AppShell />}>
           <Route path="/overview" element={<SystemOverview />} />
+          <Route path="/information" element={<InformationPage />} />
+          <Route path="/reports" element={<ReportsPage />} />
           <Route path="/users" element={<UsersOverview />} />
           <Route path="/groups" element={<GroupsOverview />} />
           <Route path="/content" element={<ContentOverview />} />

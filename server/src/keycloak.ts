@@ -81,17 +81,33 @@ async function kc(path: string, token: string, init?: RequestInit) {
 
 const displayName = 'RD-NEW'
 
+const frameAncestors = `frame-src 'self'; frame-ancestors 'self' ${env.webOrigin}; object-src 'none';`
+
 async function ensureRealm(token: string) {
   const existing = await kc(`/admin/realms/${env.keycloakRealm}`, token)
   if (existing.status === 200) {
-    const realm = (await existing.json()) as { displayName?: string }
-    if (realm.displayName === displayName) return
+    const realm = (await existing.json()) as {
+      displayName?: string
+      browserSecurityHeaders?: Record<string, string>
+    }
+    const headers = realm.browserSecurityHeaders ?? {}
+    if (realm.displayName === displayName && headers.contentSecurityPolicy === frameAncestors && headers.xFrameOptions === '') {
+      return
+    }
     const updated = await kc(`/admin/realms/${env.keycloakRealm}`, token, {
       method: 'PUT',
-      body: JSON.stringify({ ...realm, displayName }),
+      body: JSON.stringify({
+        ...realm,
+        displayName,
+        browserSecurityHeaders: {
+          ...headers,
+          contentSecurityPolicy: frameAncestors,
+          xFrameOptions: '',
+        },
+      }),
     })
     if (!updated.ok) {
-      throw new Error(`could not rename realm (${updated.status})`)
+      throw new Error(`could not update realm (${updated.status})`)
     }
     return
   }
@@ -109,11 +125,36 @@ async function ensureRealm(token: string) {
       registrationAllowed: false,
       loginWithEmailAllowed: true,
       bruteForceProtected: true,
+      browserSecurityHeaders: {
+        contentSecurityPolicy: frameAncestors,
+        xFrameOptions: '',
+      },
     }),
   })
   if (created.status !== 201 && created.status !== 409) {
     const detail = await created.text()
     throw new Error(`could not create realm (${created.status}) ${detail}`)
+  }
+}
+
+function consoleClientBody() {
+  return {
+    clientId: env.keycloakClientId,
+    name: 'Migration Console',
+    enabled: true,
+    publicClient: true,
+    standardFlowEnabled: true,
+    directAccessGrantsEnabled: false,
+    implicitFlowEnabled: false,
+    protocol: 'openid-connect',
+    rootUrl: env.webOrigin,
+    baseUrl: env.webOrigin,
+    redirectUris: [env.webOrigin, `${env.webOrigin}/`, `${env.webOrigin}/*`],
+    webOrigins: [env.webOrigin],
+    attributes: {
+      'pkce.code.challenge.method': 'S256',
+      'post.logout.redirect.uris': `${env.webOrigin}##${env.webOrigin}/##${env.webOrigin}/*`,
+    },
   }
 }
 
@@ -126,32 +167,46 @@ async function ensureClient(token: string) {
     throw new Error(`could not list clients (${listed.status})`)
   }
   const clients = (await listed.json()) as { id: string; clientId: string }[]
-  if (clients.some((client) => client.clientId === env.keycloakClientId)) return
+  const current = clients.find((client) => client.clientId === env.keycloakClientId)
+  const desired = consoleClientBody()
 
-  const created = await kc(`/admin/realms/${env.keycloakRealm}/clients`, token, {
-    method: 'POST',
+  if (!current) {
+    const created = await kc(`/admin/realms/${env.keycloakRealm}/clients`, token, {
+      method: 'POST',
+      body: JSON.stringify(desired),
+    })
+    if (created.status !== 201 && created.status !== 409) {
+      const detail = await created.text()
+      throw new Error(`could not create client (${created.status}) ${detail}`)
+    }
+    return
+  }
+
+  const detail = await kc(`/admin/realms/${env.keycloakRealm}/clients/${current.id}`, token)
+  if (!detail.ok) {
+    throw new Error(`could not read client (${detail.status})`)
+  }
+  const existing = (await detail.json()) as {
+    redirectUris?: string[]
+    webOrigins?: string[]
+    rootUrl?: string
+    attributes?: Record<string, string>
+  }
+  const sameRedirects = JSON.stringify(existing.redirectUris ?? []) === JSON.stringify(desired.redirectUris)
+  const sameOrigins = JSON.stringify(existing.webOrigins ?? []) === JSON.stringify(desired.webOrigins)
+  if (sameRedirects && sameOrigins && existing.rootUrl === desired.rootUrl) return
+
+  const updated = await kc(`/admin/realms/${env.keycloakRealm}/clients/${current.id}`, token, {
+    method: 'PUT',
     body: JSON.stringify({
-      clientId: env.keycloakClientId,
-      name: 'Migration Console',
-      enabled: true,
-      publicClient: true,
-      standardFlowEnabled: true,
-      directAccessGrantsEnabled: false,
-      implicitFlowEnabled: false,
-      protocol: 'openid-connect',
-      rootUrl: env.webOrigin,
-      baseUrl: env.webOrigin,
-      redirectUris: [env.webOrigin, `${env.webOrigin}/`, `${env.webOrigin}/*`],
-      webOrigins: [env.webOrigin],
-      attributes: {
-        'pkce.code.challenge.method': 'S256',
-        'post.logout.redirect.uris': `${env.webOrigin}##${env.webOrigin}/##${env.webOrigin}/*`,
-      },
+      ...existing,
+      ...desired,
+      attributes: { ...existing.attributes, ...desired.attributes },
     }),
   })
-  if (created.status !== 201 && created.status !== 409) {
-    const detail = await created.text()
-    throw new Error(`could not create client (${created.status}) ${detail}`)
+  if (!updated.ok) {
+    const text = await updated.text()
+    throw new Error(`could not update client (${updated.status}) ${text}`)
   }
 }
 

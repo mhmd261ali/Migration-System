@@ -7,6 +7,8 @@ import type { ListResponse } from '../types'
 type Column<T> = {
   header: string
   cell: (row: T) => ReactNode
+  width?: string
+  text?: (row: T) => string
 }
 
 export function RecordPage<T extends { id: string }>({
@@ -30,6 +32,7 @@ export function RecordPage<T extends { id: string }>({
 }) {
   const query = useApi<ListResponse<T>>(path)
   const items = query.data?.items ?? []
+  const fixed = columns.some((column) => column.width)
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -43,13 +46,13 @@ export function RecordPage<T extends { id: string }>({
       )}
       {!query.error && (
         <div className="overflow-hidden rounded-xl border border-line bg-card">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left text-sm">
+          <div className={fixed ? '' : 'overflow-x-auto'}>
+            <table className={`w-full text-left text-sm ${fixed ? 'table-fixed' : 'min-w-[640px]'}`}>
               <caption className="sr-only">{title}</caption>
               <thead className="bg-paper/70 text-muted">
                 <tr>
                   {columns.map((column) => (
-                    <th key={column.header} scope="col" className="px-4 py-3 font-medium">
+                    <th key={column.header} scope="col" className={`px-4 py-3 font-medium ${column.width ?? ''}`}>
                       {column.header}
                     </th>
                   ))}
@@ -66,7 +69,11 @@ export function RecordPage<T extends { id: string }>({
                 {items.map((row) => (
                   <tr key={row.id} className="border-t border-line">
                     {columns.map((column) => (
-                      <td key={column.header} className="px-4 py-3 align-middle text-ink">
+                      <td
+                        key={column.header}
+                        title={column.text?.(row)}
+                        className={`px-4 py-3 align-middle text-ink ${fixed ? 'truncate' : ''}`}
+                      >
                         {column.cell(row)}
                       </td>
                     ))}

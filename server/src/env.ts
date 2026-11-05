@@ -27,4 +27,6 @@ export const env = {
   authDisabled: process.env.AUTH_DISABLED === 'true',
 }
 
-export const schemaPath = path.join(directory, '..', '..', 'db', 'init', '001_schema.sql')
+export const schemaDir = path.join(directory, '..', '..', 'db', 'init')
+
+export const collectorDir = path.join(directory, '..', '..', 'collector')

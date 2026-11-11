@@ -168,6 +168,51 @@ export type ItemDependencies = {
   usedBy: DependencyItem[]
 }
 
+export type GroupDetails = {
+  group: {
+    group_id: string
+    title: string
+    owner: string | null
+    access: string | null
+    created_at: string | null
+    modified_at: string | null
+    member_count: number
+    item_count: number
+    days_since_modified: number | null
+    fetched_at: string | null
+    details: Record<string, unknown> | null
+    portal_url: string
+  }
+  members: {
+    username: string
+    full_name: string | null
+    member_role: string | null
+    joined_at: string | null
+    in_org: boolean
+    disabled: boolean
+  }[]
+  statistics: {
+    total_members: number
+    total_admins: number
+    additional_admins: number
+    regular_members: number
+    admin_usernames: string[]
+  }
+  items: {
+    item_id: string
+    title: string
+    type: string | null
+    owner: string | null
+    access: string | null
+    views: number | null
+    modified_at: string | null
+    snippet: string | null
+    in_org: boolean
+    item: Record<string, unknown> | null
+  }[]
+  lastError: { reason: string; gap_start: string } | null
+}
+
 export type ConnectionRow = {
   id: string
   name: string

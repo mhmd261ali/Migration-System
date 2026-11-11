@@ -2,6 +2,7 @@ import { Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { useAuthReady, useOptionalSession } from './auth/AuthProvider'
 import { AppShell } from './layout/AppShell'
 import { ChangeTrackingPage } from './pages/ChangeTrackingPage'
+import { GroupDetailPage } from './pages/GroupDetailPage'
 import { HomePage } from './pages/HomePage'
 import { InformationPage } from './pages/InformationPage'
 import { OpeningConsole } from './pages/OpeningConsole'
@@ -29,6 +30,7 @@ export function App() {
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/users" element={<UsersOverview />} />
           <Route path="/groups" element={<GroupsOverview />} />
+          <Route path="/groups/view" element={<GroupDetailPage />} />
           <Route path="/content" element={<ContentOverview />} />
           <Route path="/studio" element={<StudioPage />} />
           <Route path="/jobs" element={<JobsPage />} />

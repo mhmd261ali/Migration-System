@@ -395,6 +395,84 @@ app.get('/api/groups', requireAuth, asyncRoute(async (req, res) => {
   res.json({ items: result.rows })
 }))
 
+app.get('/api/groups/details', requireAuth, asyncRoute(async (req, res) => {
+  const orgId = String(req.query.org ?? '')
+  const groupId = String(req.query.group ?? '')
+  if (!/^[0-9a-f-]{36}$/i.test(orgId) || !groupId) {
+    res.status(400).json({ error: 'org and group are required.' })
+    return
+  }
+  const [group, members, items, gap] = await Promise.all([
+    pool.query(
+      `select g.group_id, g.title, g.owner, g.access, g.created_at, g.modified_at, g.member_count,
+              g.item_count, g.days_since_modified, g.fetched_at, gr.details, o.url as portal_url
+       from v_groups g
+       join groups gr on gr.org_id = g.org_id and gr.group_id = g.group_id
+       join organizations o on o.org_id = g.org_id
+       where g.org_id = $1 and g.group_id = $2`,
+      [orgId, groupId],
+    ),
+    pool.query(
+      `select m.username, coalesce(m.full_name, u.full_name) as full_name, m.member_role, m.joined_at,
+              coalesce(u.is_member, false) as in_org, coalesce(u.disabled, false) as disabled
+       from group_members m
+       left join users u on u.org_id = m.org_id and u.username = m.username
+       where m.org_id = $1 and m.group_id = $2
+       order by case m.member_role when 'owner' then 0 when 'admin' then 1 else 2 end, m.username`,
+      [orgId, groupId],
+    ),
+    pool.query(
+      `select s.item_id,
+              coalesce(i.title, s.item->>'title', s.item_id) as title,
+              coalesce(i.type, s.item->>'type') as type,
+              coalesce(i.owner_username, s.item->>'owner') as owner,
+              coalesce(i.access, s.item->>'access') as access,
+              coalesce(i.views, (s.item->>'numViews')::int) as views,
+              coalesce(i.modified_at, to_timestamp((s.item->>'modified')::bigint / 1000.0)) as modified_at,
+              coalesce(i.snippet, s.item->>'snippet') as snippet,
+              (i.item_id is not null) as in_org,
+              s.item
+       from item_group_shares s
+       left join items i on i.org_id = s.org_id and i.item_id = s.item_id
+       where s.org_id = $1 and s.group_id = $2
+       order by coalesce(i.title, s.item->>'title', s.item_id)`,
+      [orgId, groupId],
+    ),
+    pool.query(
+      `select reason, gap_start from audit_coverage_gaps
+       where org_id = $1 and source_name = $2
+         and run_id = (select run_id from report_runs where org_id = $1 and status = 'succeeded'
+                       order by started_at desc limit 1)
+       limit 1`,
+      [orgId, `group_details.${groupId}`],
+    ),
+  ])
+  if (!group.rows[0]) {
+    res.status(404).json({ error: 'Group not found.' })
+    return
+  }
+  const owner = group.rows[0].owner as string | null
+  const admins = members.rows
+    .filter((row) => row.member_role === 'admin' || row.member_role === 'owner')
+    .map((row) => row.username as string)
+  if (owner && !admins.includes(owner)) admins.push(owner)
+  const memberNames = new Set(members.rows.map((row) => row.username as string))
+  if (owner) memberNames.add(owner)
+  res.json({
+    group: group.rows[0],
+    members: members.rows,
+    statistics: {
+      total_members: memberNames.size,
+      total_admins: admins.length,
+      additional_admins: admins.length - (owner ? 1 : 0),
+      regular_members: members.rows.filter((row) => row.member_role === 'member').length,
+      admin_usernames: admins.sort(),
+    },
+    items: items.rows,
+    lastError: gap.rows[0] ?? null,
+  })
+}))
+
 app.get('/api/content', requireAuth, asyncRoute(async (req, res) => {
   const where: string[] = []
   const params: string[] = []

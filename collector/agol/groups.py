@@ -1,5 +1,6 @@
 """Organization groups."""
 
+from agol.group_details import GROUP_FIELDS, pick
 from agol.search import by_created
 
 FIELDS = [
@@ -45,6 +46,7 @@ def _all(gis):
             row = {field: raw.get(field) for field in FIELDS}
             row["id"] = row["id"] or group.id
             row["created"] = group.created if row["created"] is None else row["created"]
+            row["details"] = pick(raw, GROUP_FIELDS)
             rows.append(row)
         return rows
 

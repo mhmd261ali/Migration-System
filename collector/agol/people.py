@@ -4,8 +4,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from arcgis.gis import Group
-
+from agol import group_details as group_api
 from agol.connect import log
 from agol.search import by_created
 
@@ -125,16 +124,26 @@ def _member_pages(gis):
     return users
 
 
-# Members (one role each: owner > admin > member) and shared item ids for every group.
+# Members (one role each: owner > admin > member) and shared items for every group.
+# members / items keep the shape change tracking uses; member_rows / item_rows add
+# the names, join dates, and item metadata the group page shows.
 def group_details(gis, groups):
     def read(row):
-        group = Group(gis, row["id"])
-        found = group.get_members() or {}
-        roles = {username: "member" for username in found.get("users") or []}
-        roles.update({username: "admin" for username in found.get("admins") or []})
-        if found.get("owner"):
-            roles[found["owner"]] = "owner"
-        return {"members": roles, "items": _group_item_ids(gis, row["id"])}
+        found = group_api.members(gis, row["id"])
+        owner = (found["owner"] or {}).get("username")
+        roles, member_rows = {}, {}
+        for user in found["users"]:
+            name = user.get("username")
+            if not name:
+                continue
+            role = "owner" if name == owner else "admin" if user.get("memberType") == "admin" else "member"
+            roles[name] = role
+            member_rows[name] = {"full_name": user.get("fullName"), "role": role, "joined": user.get("joined")}
+        if owner and owner not in roles:
+            roles[owner] = "owner"
+            member_rows[owner] = {"full_name": found["owner"].get("fullName"), "role": "owner", "joined": None}
+        shared = group_api.items(gis, row["id"])
+        return {"members": roles, "member_rows": member_rows, "items": list(shared), "item_rows": shared}
 
     details, failed = {}, []
     with ThreadPoolExecutor(max_workers=GROUP_WORKERS) as pool:
@@ -149,18 +158,3 @@ def group_details(gis, groups):
                 failed.append({"group_id": row["id"], "title": row.get("title"), "error": str(exc)[:200]})
                 log(f"  group {done}/{len(futures)}: {row.get('title')} failed: {str(exc)[:120]}")
     return {"groups": details, "failed": failed}
-
-
-def _group_item_ids(gis, group_id):
-    def fetch(cursor, end, size):
-        response = gis.content.advanced_search(
-            query=f"group:{group_id} AND created:[{cursor} TO {end}]",
-            max_items=size,
-            sort_field="created",
-            sort_order="asc",
-            start=1,
-            as_dict=True,
-        )
-        return [{"id": item["id"], "created": item.get("created")} for item in response["results"]]
-
-    return [row["id"] for row in by_created(fetch)]

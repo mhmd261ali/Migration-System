@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { StatusPill } from '../components/ui'
 import { blank, formatWhen } from '../format'
@@ -152,21 +152,33 @@ export function GroupsOverview() {
       empty={active.status ? 'No groups match this filter.' : 'No groups recorded yet.'}
       banner={() => bar}
       columns={[
-        { header: 'Name', width: 'w-[30%]', cell: (row) => row.title, text: (row) => row.title },
-        { header: 'Access', width: 'w-[9%]', cell: (row) => blank(row.access) },
-        { header: 'Members', width: 'w-[10%]', cell: (row) => row.member_count },
-        { header: 'Items', width: 'w-[9%]', cell: (row) => row.item_count },
+        { header: 'Name', width: 'w-[26%]', cell: (row) => row.title, text: (row) => row.title },
+        { header: 'Access', width: 'w-[8%]', cell: (row) => blank(row.access) },
+        { header: 'Members', width: 'w-[9%]', cell: (row) => row.member_count },
+        { header: 'Items', width: 'w-[8%]', cell: (row) => row.item_count },
         {
           header: 'Owner',
-          width: 'w-[16%]',
+          width: 'w-[15%]',
           cell: (row) => blank(row.owner_username),
           text: (row) => blank(row.owner_username),
         },
-        { header: 'Last modified', width: 'w-[14%]', cell: (row) => formatWhen(row.modified_at) },
+        { header: 'Last modified', width: 'w-[13%]', cell: (row) => formatWhen(row.modified_at) },
         {
           header: 'Days since',
-          width: 'w-[12%]',
+          width: 'w-[11%]',
           cell: (row) => (row.days_since_modified == null ? '—' : row.days_since_modified),
+        },
+        {
+          header: 'Details',
+          width: 'w-[10%]',
+          cell: (row) => (
+            <Link
+              to={`/groups/view?org=${encodeURIComponent(row.org_id)}&id=${encodeURIComponent(row.group_id)}`}
+              className="rounded-md border border-line px-2 py-0.5 text-xs text-ink transition hover:border-teal hover:text-teal"
+            >
+              View
+            </Link>
+          ),
         },
       ]}
     />

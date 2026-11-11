@@ -279,14 +279,22 @@ def _group_details(db, org_id, details, now):
     read = list(details)
     db.execute("delete from group_members where org_id = %s and group_id = any(%s)", (org_id, read))
     db.execute("delete from item_group_shares where org_id = %s and group_id = any(%s)", (org_id, read))
-    members = [(org_id, gid, username, role) for gid, d in details.items() for username, role in d["members"].items()]
-    shares = [(org_id, item_id, gid, now) for gid, d in details.items() for item_id in dict.fromkeys(d["items"])]
+    members = [
+        (org_id, gid, username, role, (d.get("member_rows") or {}).get(username, {}).get("full_name"),
+         _ts((d.get("member_rows") or {}).get(username, {}).get("joined")))
+        for gid, d in details.items() for username, role in d["members"].items()
+    ]
+    shares = [
+        (org_id, item_id, gid, now, _json((d.get("item_rows") or {}).get(item_id)))
+        for gid, d in details.items() for item_id in dict.fromkeys(d["items"])
+    ]
     db.cursor().executemany(
-        "insert into group_members (org_id, group_id, username, member_role) values (%s, %s, %s, %s)",
+        """insert into group_members (org_id, group_id, username, member_role, full_name, joined_at)
+           values (%s, %s, %s, %s, %s, %s)""",
         members,
     )
     db.cursor().executemany(
-        "insert into item_group_shares (org_id, item_id, group_id, observed_at) values (%s, %s, %s, %s)",
+        "insert into item_group_shares (org_id, item_id, group_id, observed_at, item) values (%s, %s, %s, %s, %s)",
         shares,
     )
     db.cursor().executemany(
@@ -513,19 +521,20 @@ def _groups(db, org_id, rows, now, full):
     db.cursor().executemany(
         """insert into groups
              (org_id, group_id, title, owner_username, access, created_at, modified_at,
-              is_invitation_only, is_view_only, protected, auto_join, tags, fetched_at)
-           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              is_invitation_only, is_view_only, protected, auto_join, tags, fetched_at, details)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
            on conflict (org_id, group_id) do update set
              title = excluded.title, owner_username = excluded.owner_username,
              access = excluded.access, created_at = excluded.created_at,
              modified_at = excluded.modified_at, is_invitation_only = excluded.is_invitation_only,
              is_view_only = excluded.is_view_only, protected = excluded.protected,
-             auto_join = excluded.auto_join, tags = excluded.tags, fetched_at = excluded.fetched_at""",
+             auto_join = excluded.auto_join, tags = excluded.tags, fetched_at = excluded.fetched_at,
+             details = coalesce(excluded.details, groups.details)""",
         [
             (org_id, row["id"], row.get("title") or row["id"], row.get("owner"), row.get("access"),
              _ts(row.get("created")), _ts(row.get("modified")), _bool(row.get("isInvitationOnly")),
              _bool(row.get("isViewOnly")), _bool(row.get("protected")), _bool(row.get("autoJoin")),
-             _texts(row.get("tags")), now)
+             _texts(row.get("tags")), now, _json(row.get("details")))
             for row in rows
         ],
     )
@@ -822,7 +831,7 @@ def _entities(r):
         if full:
             complete.add("group")
         for row in r["groups"]:
-            add("group", row["id"], row, row.get("title"))
+            add("group", row["id"], {key: value for key, value in row.items() if key != "details"}, row.get("title"))
 
     if isinstance(r["items"], list):
         if full:

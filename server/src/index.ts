@@ -434,9 +434,20 @@ app.get('/api/content', requireAuth, asyncRoute(async (req, res) => {
        i.is_empty,
        i.deprecated,
        i.owner_disabled,
-       o.url as portal_url
+       o.url as portal_url,
+       arcgis.signed_in_username as arcgis_username,
+       arcgis.is_admin as arcgis_is_admin
      from v_items i
      join organizations o on o.org_id = i.org_id
+     left join lateral (
+       select
+         signed_in_username,
+         (summary->>'full_view')::boolean as is_admin
+       from report_runs
+       where org_id = i.org_id and status = 'succeeded'
+       order by started_at desc
+       limit 1
+     ) arcgis on true
      ${where.length ? `where ${where.join(' and ')}` : ''}
      order by ${order}`,
     params,

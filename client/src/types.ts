@@ -150,6 +150,8 @@ export type ContentRow = {
   deprecated: boolean
   owner_disabled: boolean
   portal_url: string
+  arcgis_username: string | null
+  arcgis_is_admin: boolean | null
 }
 
 export type DependencyItem = {

@@ -1,5 +1,15 @@
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
+import {
+  canAdminDelete,
+  deleteLiveItem,
+  ExpiredTokenError,
+  getLiveItem,
+  getPortalUser,
+  permissionReason,
+  previewDependencies,
+  runDeletion,
+} from './agol.js'
 import { requireAuth } from './auth.js'
 import { recoverRuns, runReport, startCollection } from './collector.js'
 import { databaseStatus, ensureOrganization, pool, prepareDatabase } from './db.js'
@@ -9,6 +19,8 @@ import { identityStatus, prepareKeycloak } from './keycloak.js'
 const app = express()
 app.use(cors({ origin: env.webOrigin }))
 app.use(express.json())
+
+const deleteTokens = new Map<string, { token: string; expiresAt: number }>()
 
 app.get('/api/health', asyncRoute(async (_req, res) => {
   const [database, identity] = await Promise.all([
@@ -497,6 +509,190 @@ app.get('/api/content/dependencies', requireAuth, asyncRoute(async (req, res) =>
   res.json({ item: item.rows[0], check: check.rows[0] ?? null, uses: uses.rows, usedBy: usedBy.rows })
 }))
 
+app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
+  const portalUrl = readPortalUrl(req.body?.portal_url)
+  const password = typeof req.body?.password === 'string' ? req.body.password : undefined
+  const action = req.body?.action
+  const itemId = req.body?.item_id
+  if (!portalUrl || (req.body?.password !== undefined && typeof req.body.password !== 'string')) {
+    res.status(400).json({ error: 'A valid portal URL is required.' })
+    return
+  }
+  if (action !== 'access' && action !== 'preview' && action !== 'delete') {
+    res.status(400).json({ error: 'Unknown delete operation.' })
+    return
+  }
+  if (typeof itemId !== 'string' || !/^[0-9a-f]{32}$/i.test(itemId)) {
+    res.status(400).json({ error: 'A valid ArcGIS item ID is required.' })
+    return
+  }
+
+  const found = await pool.query<{ org_id: string; url: string; username: string | null }>(
+    `select o.org_id::text, o.url, coalesce(
+       (select signed_in_username from report_runs
+        where org_id = o.org_id and status = 'succeeded'
+        order by started_at desc limit 1),
+       c.username
+     ) as username
+     from organizations o
+     left join connections c on c.id = o.connection_id
+     where o.url = $1`,
+    [portalUrl],
+  )
+  const org = found.rows[0]
+  if (!org || !org.username) {
+    res.status(404).json({ error: 'The ArcGIS account for this portal is unavailable.' })
+    return
+  }
+  const itemResult = await pool.query<{ title: string }>(
+    `select title from items where org_id = $1 and item_id = $2`,
+    [org.org_id, itemId],
+  )
+  const selected = itemResult.rows[0]
+  if (!selected) {
+    res.status(404).json({ error: 'Item not found in this inventory.' })
+    return
+  }
+
+  const tokenKey = `${portalUrl.toLowerCase()}|${org.username.toLowerCase()}`
+  try {
+    let cached = deleteTokens.get(tokenKey)
+    if (!cached || cached.expiresAt <= Date.now() + 30_000) {
+      if (!password) {
+        res.json({ needs_password: true })
+        return
+      }
+      cached = await generatePortalToken(portalUrl, org.username, password)
+    }
+    const token = cached.token
+    const user = await getPortalUser(portalUrl, token, env.webOrigin)
+    deleteTokens.set(tokenKey, cached)
+
+    if (action === 'access') {
+      const live = await getLiveItem(portalUrl, token, env.webOrigin, itemId)
+      const allowed = live !== null &&
+        (live.owner.toLowerCase() === user.username.toLowerCase() || canAdminDelete(user.privileges))
+      const access = {
+        item_id: itemId,
+        allowed,
+        protected: live?.protected ?? null,
+        reason: permissionReason(live, user.username, user.privileges),
+      }
+      res.json({ org_id: org.org_id, access })
+      return
+    }
+
+    const includeDependencies = action === 'delete' && req.body?.include_dependencies === true
+    let dependencyResult: { id: string; title: string | null }[] = []
+    if (action === 'preview' || includeDependencies) {
+      const dependencyCheck = await pool.query<{ ok: boolean }>(
+        `select ok from item_checks
+         where org_id = $1 and item_id = $2 and check_name = 'dependencies'`,
+        [org.org_id, itemId],
+      )
+      if (!dependencyCheck.rows[0]?.ok) {
+        res.status(409).json({ error: 'Dependency information is unavailable; no items were deleted.' })
+        return
+      }
+      const dependencies = await pool.query<{ id: string; title: string | null }>(
+        `select d.dependency_item_id as id, i.title
+         from item_dependencies d
+         left join items i on i.org_id = d.org_id and i.item_id = d.dependency_item_id
+         where d.org_id = $1 and d.item_id = $2
+         order by i.title nulls last, d.dependency_item_id`,
+        [org.org_id, itemId],
+      )
+      dependencyResult = dependencies.rows
+    }
+    const dependencyIds = dependencyResult.map((row) => row.id)
+    if (action === 'preview') {
+      const relationResult = await pool.query<{ target_id: string; dependent_id: string; title: string | null }>(
+        `select d.dependency_item_id as target_id, d.item_id as dependent_id, i.title
+         from item_dependencies d
+         left join items i on i.org_id = d.org_id and i.item_id = d.item_id
+         where d.org_id = $1 and d.dependency_item_id = any($2::text[])`,
+        [org.org_id, dependencyIds],
+      )
+      const titles = Object.fromEntries(dependencyResult.map((row) => [row.id, row.title || row.id]))
+      const otherDependents = Object.fromEntries(dependencyIds.map((id) => [
+        id,
+        relationResult.rows.some((row) => row.target_id === id && row.dependent_id !== itemId),
+      ]))
+      const preview = await previewDependencies({
+        dependencyIds,
+        titles,
+        username: user.username,
+        privileges: user.privileges,
+        otherDependents,
+        load: (id) => getLiveItem(portalUrl, token, env.webOrigin, id),
+      })
+      res.json(preview)
+      return
+    }
+
+    const approvedIds = Array.isArray(req.body?.eligible_dependency_ids)
+      ? req.body.eligible_dependency_ids.filter((id: unknown): id is string =>
+          typeof id === 'string' && dependencyIds.includes(id),
+        )
+      : []
+    const relatedIds = [...new Set([itemId, ...dependencyIds])]
+    const relationResult = await pool.query<{ target_id: string; dependent_id: string; title: string | null }>(
+      `select d.dependency_item_id as target_id, d.item_id as dependent_id, i.title
+       from item_dependencies d
+       left join items i on i.org_id = d.org_id and i.item_id = d.item_id
+       where d.org_id = $1 and d.dependency_item_id = any($2::text[])`,
+      [org.org_id, relatedIds],
+    )
+    const titles: Record<string, string> = { [itemId]: selected.title }
+    for (const row of dependencyResult) titles[row.id] = row.title || row.id
+    const usedByRows = relationResult.rows
+      .filter((row) => row.target_id === itemId)
+      .map((row) => ({ id: row.dependent_id, title: row.title || row.dependent_id }))
+    const otherDependents = Object.fromEntries(dependencyIds.map((id) => [
+      id,
+      relationResult.rows.some((row) => row.target_id === id && row.dependent_id !== itemId),
+    ]))
+    const restrictionReasons = (Array.isArray(req.body?.restricted) ? req.body.restricted : [])
+      .filter((row: unknown): row is { id: string; reason: string } =>
+        typeof row === 'object' && row !== null &&
+        'id' in row && typeof row.id === 'string' &&
+        'reason' in row && typeof row.reason === 'string',
+      )
+      .filter((row: { id: string }) => dependencyIds.includes(row.id))
+    const restrictedReasons = Object.fromEntries(restrictionReasons.map((row: { id: string; reason: string }) => [row.id, row.reason]))
+    const result = await runDeletion({
+      selectedId: itemId,
+      selectedTitle: selected.title,
+      includeDependencies,
+      eligibleDependencyIds: includeDependencies ? approvedIds : [],
+      restrictedReasons,
+      username: user.username,
+      privileges: user.privileges,
+      dependencyIds,
+      titles,
+      otherDependents,
+      usedBy: usedByRows,
+      load: (id) => getLiveItem(portalUrl, token, env.webOrigin, id),
+      remove: (live) => deleteLiveItem(portalUrl, token, env.webOrigin, live),
+    })
+    res.json({
+      ok: result.ok,
+      message: result.message,
+      deleted_items: result.deleted.map((row) => ({ item_id: row.id, title: row.title, type: null })),
+      skipped_items: result.skipped.map((row) => ({ item_id: row.id, title: row.title, type: null, reason: row.reason })),
+      failed_items: result.failed.map((row) => ({ item_id: row.id, title: row.title, type: null, reason: row.reason })),
+      blocking_items: result.blocking.map((row) => ({ item_id: row.id, title: row.title, type: null })),
+    })
+  } catch (error) {
+    if (error instanceof ExpiredTokenError) {
+      deleteTokens.delete(tokenKey)
+      res.json({ needs_password: true })
+      return
+    }
+    res.status(502).json({ error: error instanceof Error ? error.message : 'ArcGIS deletion failed.' })
+  }
+}))
+
 app.get('/api/connections', requireAuth, asyncRoute(async (_req, res) => {
   const result = await pool.query(
     `select id, name, kind, portal_url, username, status, created_at
@@ -724,7 +920,11 @@ function tokenEndpoint(portalUrl: string) {
   return url.toString()
 }
 
-async function generatePortalToken(portalUrl: string, username: string, password: string) {
+async function generatePortalToken(
+  portalUrl: string,
+  username: string,
+  password: string,
+): Promise<{ token: string; expiresAt: number }> {
   const body = new URLSearchParams({
     username,
     password,
@@ -751,11 +951,16 @@ async function generatePortalToken(portalUrl: string, username: string, password
 
   const json = (await response.json().catch(() => null)) as {
     token?: string
+    expires?: number
     error?: { message?: string; details?: string[] }
   } | null
   const detail = json?.error?.details?.filter(Boolean).join(' ')
   if (!response.ok || !json?.token) {
     throw new Error(detail || json?.error?.message || 'Could not connect to this portal.')
+  }
+  return {
+    token: json.token,
+    expiresAt: typeof json.expires === 'number' ? json.expires : Date.now() + 60 * 60 * 1000,
   }
 }
 

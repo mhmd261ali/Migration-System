@@ -1,19 +1,18 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { api, useApi } from '../api'
+import { api } from '../api'
 import { StatusPill } from '../components/ui'
 import { blank, formatWhen } from '../format'
 import type {
   ActivityRow,
   ConnectionRow,
   ContentRow,
-  DependencyItem,
-  ItemDependencies,
   GroupRow,
   JobRow,
   UserRow,
 } from '../types'
 import { DependencyDialog } from './DependencyDialog'
+import { DeleteConfirmationDialog, type DeleteAccess } from './DeleteConfirmationDialog'
 import { RecordPage } from './RecordPage'
 
 const userFilters = [
@@ -185,10 +184,9 @@ export function GroupsOverview() {
 export function ContentOverview() {
   const { active, path, bar } = useFilter('/content', contentFilters, contentSorts)
   const [selected, setSelected] = useState<ContentRow>()
-  const [deleteConfirmation, setDeleteConfirmation] = useState<{
-    item: ContentRow
-    includeDependencies?: boolean
-  }>()
+  const [deleteConfirmation, setDeleteConfirmation] = useState<ContentRow>()
+  const [deleteAccess, setDeleteAccess] = useState<Record<string, DeleteAccess>>({})
+
   return (
     <RecordPage<ContentRow>
       title={active.status ? `Content Overview · ${active.label}` : 'Content Overview'}
@@ -210,10 +208,9 @@ export function ContentOverview() {
           )}
           {deleteConfirmation && (
             <DeleteConfirmationDialog
-              item={deleteConfirmation.item}
-              includeDependencies={deleteConfirmation.includeDependencies}
-              onChooseDependencies={(includeDependencies) =>
-                setDeleteConfirmation((current) => current && { ...current, includeDependencies })
+              item={deleteConfirmation}
+              onAccessChecked={(orgId, access) =>
+                setDeleteAccess((current) => ({ ...current, [`${orgId}:${access.item_id}`]: access }))
               }
               onClose={() => setDeleteConfirmation(undefined)}
             />
@@ -255,249 +252,48 @@ export function ContentOverview() {
           header: 'Actions',
           width: 'w-[14%]',
           cell: (row) => {
-            const canManage =
-              row.arcgis_is_admin === true ||
-              (row.arcgis_username != null &&
-                row.owner_username?.toLowerCase() === row.arcgis_username.toLowerCase())
-            if (!canManage) return null
+            const ownsItem = row.arcgis_username != null &&
+              row.owner_username?.toLowerCase() === row.arcgis_username.toLowerCase()
+            const canManage = row.arcgis_is_admin === true || ownsItem
+            const permission = deleteAccess[`${row.org_id}:${row.item_id}`]
+            const showDelete = permission
+              ? permission.allowed
+              : ownsItem || row.arcgis_is_admin === true
+            if (!canManage && !showDelete) return null
+            const protectedItem = permission?.allowed === true && permission.protected !== false
+            const protectionTooltip = permission?.protected === true
+              ? 'Deletion protection is enabled. Edit the item to disable protection.'
+              : protectedItem
+                ? permission?.reason ?? 'Could not verify deletion protection.'
+                : undefined
             return (
               <div className="flex justify-center gap-2">
-                <button
-                  type="button"
-                  className="cursor-pointer rounded-md border border-teal bg-teal-soft px-3.5 py-1.5 text-xs font-medium text-teal transition-colors duration-200 hover:bg-teal hover:text-white"
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDeleteConfirmation({ item: row })}
-                  className="cursor-pointer rounded-md border border-line bg-paper px-3.5 py-1.5 text-xs font-medium text-danger transition-colors duration-200 hover:border-danger hover:bg-danger hover:text-white"
-                >
-                  Delete
-                </button>
+                {canManage && (
+                  <button
+                    type="button"
+                    className="cursor-pointer rounded-md border border-teal bg-teal-soft px-3.5 py-1.5 text-xs font-medium text-teal transition-colors duration-200 hover:bg-teal hover:text-white"
+                  >
+                    Edit
+                  </button>
+                )}
+                {showDelete && (
+                  <span title={protectionTooltip}>
+                    <button
+                      type="button"
+                      disabled={protectedItem}
+                      onClick={() => setDeleteConfirmation(row)}
+                      className="cursor-pointer rounded-md border border-line bg-paper px-3.5 py-1.5 text-xs font-medium text-danger transition-colors duration-200 hover:border-danger hover:bg-danger hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Delete
+                    </button>
+                  </span>
+                )}
               </div>
             )
           },
         },
       ]}
     />
-  )
-}
-
-function DeleteConfirmationDialog({
-  item,
-  includeDependencies,
-  onChooseDependencies,
-  onClose,
-}: {
-  item: ContentRow
-  includeDependencies?: boolean
-  onChooseDependencies: (includeDependencies: boolean) => void
-  onClose: () => void
-}) {
-  const dependencies = useApi<ItemDependencies>(
-    `/content/dependencies?org=${encodeURIComponent(item.org_id)}&item=${encodeURIComponent(item.item_id)}`,
-  )
-
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
-  const dependencyChoiceMade = includeDependencies !== undefined
-
-  return (
-    <div
-      className="dialog-backdrop-enter fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink/30 px-4 py-12"
-      onClick={onClose}
-    >
-      <div
-        key={dependencyChoiceMade ? 'final-confirmation' : 'dependency-choice'}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-confirmation-title"
-        className="dialog-panel-enter w-full max-w-md rounded-xl border border-line bg-card px-5 py-4 shadow-xl"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <h2 id="delete-confirmation-title" className="text-lg font-semibold text-ink">
-          {dependencyChoiceMade
-            ? includeDependencies
-              ? 'Are you sure you want to delete this item with its dependencies?'
-              : 'Are you sure you want to delete this item?'
-            : "Do you want to delete this item's dependencies as well?"}
-        </h2>
-        {!dependencyChoiceMade || !includeDependencies ? (
-          <p className="mt-1 truncate text-sm text-muted" title={item.title}>
-            {item.title}
-          </p>
-        ) : (
-          <DeleteTargets
-            itemTitle={item.title}
-            rows={dependencies.data?.uses}
-            loading={dependencies.loading}
-            unavailable={Boolean(dependencies.error) || (!dependencies.loading && !dependencies.data?.uses)}
-          />
-        )}
-        {!dependencyChoiceMade && (
-          <div className="mt-4 grid gap-3">
-            <DeleteDependencySection
-              title="Dependencies"
-              rows={dependencies.data?.uses}
-              loading={dependencies.loading}
-              unavailable={Boolean(dependencies.error) || (!dependencies.loading && !dependencies.data?.uses)}
-            />
-            <DeleteDependencySection
-              title="Affected items"
-              rows={dependencies.data?.usedBy}
-              loading={dependencies.loading}
-              unavailable={Boolean(dependencies.error) || (!dependencies.loading && !dependencies.data?.usedBy)}
-            />
-          </div>
-        )}
-        <div className="mt-5 flex flex-wrap justify-end gap-2">
-          {dependencyChoiceMade ? (
-            <>
-              <button
-                type="button"
-                onClick={onClose}
-                className="cursor-pointer rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink transition-colors duration-200 hover:border-teal hover:text-teal"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={onClose}
-                className="cursor-pointer rounded-lg bg-danger px-4 py-2 text-sm font-medium text-white transition-opacity duration-200 hover:opacity-90"
-              >
-                Confirm
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={onClose}
-                className="cursor-pointer rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink transition-colors duration-200 hover:border-teal hover:text-teal"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => onChooseDependencies(false)}
-                className="cursor-pointer rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink transition-colors duration-200 hover:border-teal hover:text-teal"
-              >
-                No
-              </button>
-              <button
-                type="button"
-                onClick={() => onChooseDependencies(true)}
-                className="cursor-pointer rounded-lg bg-teal px-4 py-2 text-sm font-medium text-white transition-opacity duration-200 hover:opacity-90"
-              >
-                Yes
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function DeleteTargets({
-  itemTitle,
-  rows,
-  loading,
-  unavailable,
-}: {
-  itemTitle: string
-  rows: DependencyItem[] | undefined
-  loading: boolean
-  unavailable: boolean
-}) {
-  if (loading) {
-    return <p className="mt-2 text-sm text-muted">Loading dependency information…</p>
-  }
-  if (unavailable || !rows) {
-    return <p className="mt-2 text-sm text-danger">Dependency information unavailable.</p>
-  }
-  if (rows.length === 0) {
-    return (
-      <p className="mt-1 truncate text-sm text-muted" title={itemTitle}>
-        {itemTitle}
-      </p>
-    )
-  }
-  return (
-    <section className="mt-3 rounded-lg bg-paper px-3 py-2">
-      <h3 className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted">
-        Dependencies to be deleted
-      </h3>
-      <ul className="mt-1 max-h-40 divide-y divide-line overflow-y-auto">
-        {rows.map((row) => (
-          <li key={row.id} className="space-y-0.5 py-2 text-xs">
-            <p className="flex items-start gap-2">
-              <span className="shrink-0 text-muted">Name</span>
-              <span className="min-w-0 break-words text-ink">{row.title ?? '—'}</span>
-            </p>
-            <p className="flex items-start gap-2">
-              <span className="shrink-0 text-muted">Type</span>
-              <span className="min-w-0 break-words text-ink">{row.type ?? '—'}</span>
-            </p>
-            <p className="flex items-start gap-2">
-              <span className="shrink-0 text-muted">ID</span>
-              <span className="min-w-0 break-all font-mono text-[11px] text-ink">{row.id}</span>
-            </p>
-          </li>
-        ))}
-      </ul>
-    </section>
-  )
-}
-
-function DeleteDependencySection({
-  title,
-  rows,
-  loading,
-  unavailable,
-}: {
-  title: string
-  rows: DependencyItem[] | undefined
-  loading: boolean
-  unavailable: boolean
-}) {
-  return (
-    <section className="min-w-0 rounded-lg bg-paper px-3 py-2">
-      <h3 className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted">{title}</h3>
-      {loading ? (
-        <p className="mt-1 text-xs text-muted">Loading dependency information…</p>
-      ) : unavailable ? (
-        <p className="mt-1 text-xs text-danger">Dependency information unavailable.</p>
-      ) : rows?.length ? (
-        <ul className="mt-1 max-h-32 divide-y divide-line overflow-y-auto">
-          {rows.map((row) => (
-            <li key={row.id} className="space-y-0.5 py-2 text-xs">
-              <p className="flex items-start gap-2">
-                <span className="shrink-0 text-muted">Name</span>
-                <span className="min-w-0 break-words text-ink">{row.title ?? '—'}</span>
-              </p>
-              <p className="flex items-start gap-2">
-                <span className="shrink-0 text-muted">Type</span>
-                <span className="min-w-0 break-words text-ink">{row.type ?? '—'}</span>
-              </p>
-              <p className="flex items-start gap-2">
-                <span className="shrink-0 text-muted">ID</span>
-                <span className="min-w-0 break-all font-mono text-[11px] text-ink">{row.id}</span>
-              </p>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="mt-1 text-xs text-muted">No items recorded.</p>
-      )}
-    </section>
   )
 }
 

@@ -13,6 +13,7 @@ import type {
 } from '../types'
 import { DependencyDialog } from './DependencyDialog'
 import { DeleteConfirmationDialog, type DeleteAccess } from './DeleteConfirmationDialog'
+import { EditItemDialog } from './EditItemDialog'
 import { RecordPage } from './RecordPage'
 
 const userFilters = [
@@ -185,6 +186,7 @@ export function ContentOverview() {
   const { active, path, bar } = useFilter('/content', contentFilters, contentSorts)
   const [selected, setSelected] = useState<ContentRow>()
   const [deleteConfirmation, setDeleteConfirmation] = useState<ContentRow>()
+  const [editItem, setEditItem] = useState<ContentRow>()
   const [deleteAccess, setDeleteAccess] = useState<Record<string, DeleteAccess>>({})
 
   return (
@@ -204,6 +206,12 @@ export function ContentOverview() {
               itemId={selected.item_id}
               portalUrl={selected.portal_url}
               onClose={() => setSelected(undefined)}
+            />
+          )}
+          {editItem && (
+            <EditItemDialog
+              item={editItem}
+              onClose={() => setEditItem(undefined)}
             />
           )}
           {deleteConfirmation && (
@@ -271,6 +279,7 @@ export function ContentOverview() {
                 {canManage && (
                   <button
                     type="button"
+                    onClick={() => setEditItem(row)}
                     className="cursor-pointer rounded-md border border-teal bg-teal-soft px-3.5 py-1.5 text-xs font-medium text-teal transition-colors duration-200 hover:bg-teal hover:text-white"
                   >
                     Edit

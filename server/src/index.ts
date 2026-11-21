@@ -4,11 +4,14 @@ import {
   canAdminDelete,
   deleteLiveItem,
   ExpiredTokenError,
+  getItemEditPermissions,
   getLiveItem,
   getPortalUser,
   permissionReason,
   previewDependencies,
   runDeletion,
+  updateLiveItem,
+  type EditItemChanges,
 } from './agol.js'
 import { requireAuth } from './auth.js'
 import { recoverRuns, runReport, startCollection } from './collector.js'
@@ -433,6 +436,9 @@ app.get('/api/content', requireAuth, asyncRoute(async (req, res) => {
        i.item_id,
        i.title,
        i.type,
+       item_metadata.description,
+       item_metadata.snippet,
+       item_metadata.tags,
        i.owner_username,
        i.access,
        i.modified_at,
@@ -450,6 +456,7 @@ app.get('/api/content', requireAuth, asyncRoute(async (req, res) => {
        arcgis.signed_in_username as arcgis_username,
        arcgis.is_admin as arcgis_is_admin
      from v_items i
+     join items item_metadata on item_metadata.org_id = i.org_id and item_metadata.item_id = i.item_id
      join organizations o on o.org_id = i.org_id
      left join lateral (
        select
@@ -693,6 +700,96 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
   }
 }))
 
+app.post('/api/content/edit', requireAuth, asyncRoute(async (req, res) => {
+  const portalUrl = readPortalUrl(req.body?.portal_url)
+  const password = typeof req.body?.password === 'string' ? req.body.password : undefined
+  const action = req.body?.action
+  const itemId = req.body?.item_id
+  if (!portalUrl || (req.body?.password !== undefined && typeof req.body.password !== 'string')) {
+    res.status(400).json({ error: 'A valid portal URL is required.' })
+    return
+  }
+  if (action !== 'access' && action !== 'update') {
+    res.status(400).json({ error: 'Unknown edit operation.' })
+    return
+  }
+  if (typeof itemId !== 'string' || !/^[0-9a-f]{32}$/i.test(itemId)) {
+    res.status(400).json({ error: 'A valid ArcGIS item ID is required.' })
+    return
+  }
+  const changes = action === 'update' ? readEditChanges(req.body?.changes) : null
+  if (action === 'update' && !changes) {
+    res.status(400).json({ error: 'The item changes are invalid.' })
+    return
+  }
+
+  const found = await pool.query<{ org_id: string; url: string; username: string | null }>(
+    `select o.org_id::text, o.url, coalesce(
+       (select signed_in_username from report_runs
+        where org_id = o.org_id and status = 'succeeded'
+        order by started_at desc limit 1),
+       c.username
+     ) as username
+     from organizations o
+     left join connections c on c.id = o.connection_id
+     where o.url = $1`,
+    [portalUrl],
+  )
+  const org = found.rows[0]
+  if (!org || !org.username) {
+    res.status(404).json({ error: 'The ArcGIS account for this portal is unavailable.' })
+    return
+  }
+  const itemResult = await pool.query<{ title: string }>(
+    `select title from items where org_id = $1 and item_id = $2`,
+    [org.org_id, itemId],
+  )
+  if (!itemResult.rows[0]) {
+    res.status(404).json({ error: 'Item not found in this inventory.' })
+    return
+  }
+
+  const tokenKey = `${portalUrl.toLowerCase()}|${org.username.toLowerCase()}`
+  try {
+    let cached = deleteTokens.get(tokenKey)
+    if (!cached || cached.expiresAt <= Date.now() + 30_000) {
+      if (!password) {
+        res.json({ needs_password: true })
+        return
+      }
+      cached = await generatePortalToken(portalUrl, org.username, password)
+    }
+    const token = cached.token
+    const user = await getPortalUser(portalUrl, token, env.webOrigin)
+    deleteTokens.set(tokenKey, cached)
+    const live = await getLiveItem(portalUrl, token, env.webOrigin, itemId)
+    if (!live) {
+      res.status(404).json({ error: 'The item is unavailable in ArcGIS Online.' })
+      return
+    }
+
+    if (action === 'access') {
+      res.json({ permissions: getItemEditPermissions(live, user), item: live })
+      return
+    }
+
+    if (!changes) {
+      res.status(400).json({ error: 'The item changes are invalid.' })
+      return
+    }
+    const result = await updateLiveItem(portalUrl, token, env.webOrigin, live, user, changes)
+    if (result.needs_password) deleteTokens.delete(tokenKey)
+    res.json(result)
+  } catch (error) {
+    if (error instanceof ExpiredTokenError) {
+      deleteTokens.delete(tokenKey)
+      res.json({ needs_password: true })
+      return
+    }
+    res.status(502).json({ error: error instanceof Error ? error.message : 'ArcGIS item update failed.' })
+  }
+}))
+
 app.get('/api/connections', requireAuth, asyncRoute(async (_req, res) => {
   const result = await pool.query(
     `select id, name, kind, portal_url, username, status, created_at
@@ -881,6 +978,41 @@ function readPortalUrl(value: unknown) {
   } catch {
     return null
   }
+}
+
+function readEditChanges(value: unknown): EditItemChanges | null {
+  if (!isRecord(value) || Object.keys(value).some((key) => !['metadata', 'access', 'owner'].includes(key))) return null
+  if (!isRecord(value.metadata) ||
+      Object.keys(value.metadata).some((key) => !['title', 'snippet', 'description', 'tags'].includes(key))) {
+    return null
+  }
+  const metadata: EditItemChanges['metadata'] = {}
+  for (const key of ['title', 'snippet', 'description'] as const) {
+    const field = value.metadata[key]
+    if (field !== undefined) {
+      if (typeof field !== 'string') return null
+      metadata[key] = field
+    }
+  }
+  if (value.metadata.tags !== undefined) {
+    if (!Array.isArray(value.metadata.tags) || value.metadata.tags.some((tag) => typeof tag !== 'string')) return null
+    metadata.tags = value.metadata.tags
+  }
+
+  const changes: EditItemChanges = { metadata }
+  if (value.access !== undefined) {
+    if (value.access !== 'private' && value.access !== 'org' && value.access !== 'public') return null
+    changes.access = value.access
+  }
+  if (value.owner !== undefined) {
+    if (typeof value.owner !== 'string' || value.owner.length > 200) return null
+    changes.owner = value.owner
+  }
+  return changes
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function readUsername(value: unknown) {

@@ -5,11 +5,39 @@ export type LiveItem = {
   title: string
   owner: string
   protected: boolean | null
+  snippet: string
+  description: string
+  access: string | null
+  tags: string[]
+  type: string
 }
 
 export type DeleteLine = { id: string; title: string; reason?: string }
+export type ItemAccess = 'private' | 'org' | 'public'
+export type EditItemChanges = {
+  metadata: Partial<{ title: string; snippet: string; description: string; tags: string[] }>
+  access?: ItemAccess
+  owner?: string
+}
+export type EditOperation = {
+  status: 'updated' | 'unchanged' | 'failed' | 'skipped'
+  message: string
+}
+export type EditItemResult = {
+  ok: boolean
+  needs_password?: boolean
+  metadata: EditOperation
+  sharing: EditOperation
+  ownership: EditOperation
+}
 
 const DELETE_PRIVILEGE = 'portal:admin:deleteItems'
+const UPDATE_ITEMS_PRIVILEGE = 'portal:admin:updateItems'
+const REASSIGN_ITEMS_PRIVILEGE = 'portal:admin:reassignItems'
+const SHARE_TO_ORG_PRIVILEGE = 'portal:user:shareToOrg'
+const SHARE_TO_PUBLIC_PRIVILEGE = 'portal:user:shareToPublic'
+const ADMIN_SHARE_TO_ORG_PRIVILEGE = 'portal:admin:shareToOrg'
+const ADMIN_SHARE_TO_PUBLIC_PRIVILEGE = 'portal:admin:shareToPublic'
 
 export function sharingRest(portalUrl: string) {
   const url = new URL(portalUrl)
@@ -60,6 +88,179 @@ export async function getLiveItem(portalUrl: string, token: string, referer: str
     title: typeof json.title === 'string' ? json.title : itemId,
     owner: typeof json.owner === 'string' ? json.owner : '',
     protected: typeof json.protected === 'boolean' ? json.protected : null,
+    snippet: typeof json.snippet === 'string' ? json.snippet : '',
+    description: typeof json.description === 'string' ? json.description : '',
+    access: typeof json.access === 'string' ? json.access : null,
+    tags: Array.isArray(json.tags) ? json.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+    type: typeof json.type === 'string' ? json.type : '',
+  }
+}
+
+export function getItemEditPermissions(item: LiveItem, user: Awaited<ReturnType<typeof getPortalUser>>) {
+  const isOwner = item.owner.toLowerCase() === user.username.toLowerCase()
+  return {
+    can_edit: isOwner || user.privileges.includes(UPDATE_ITEMS_PRIVILEGE),
+    can_reassign_owner: user.privileges.includes(REASSIGN_ITEMS_PRIVILEGE),
+  }
+}
+
+export async function updateLiveItem(
+  portalUrl: string,
+  token: string,
+  referer: string,
+  item: LiveItem,
+  user: Awaited<ReturnType<typeof getPortalUser>>,
+  changes: EditItemChanges,
+): Promise<EditItemResult> {
+  const permissions = getItemEditPermissions(item, user)
+  let tokenExpired = false
+  const unchanged = (message: string): EditOperation => ({ status: 'unchanged', message })
+  const failed = (message: string): EditOperation => ({ status: 'failed', message })
+  const skipped = (): EditOperation => ({
+    status: 'skipped',
+    message: 'Not attempted because the ArcGIS token expired during this update.',
+  })
+  const attempt = async (operation: () => Promise<string | void>): Promise<EditOperation> => {
+    if (tokenExpired) return skipped()
+    try {
+      const message = await operation()
+      return { status: 'updated', message: message || 'Updated successfully.' }
+    } catch (error) {
+      if (error instanceof ExpiredTokenError) {
+        tokenExpired = true
+        return failed('ArcGIS token expired; enter the password to continue.')
+      }
+      return failed(errorMessage(error))
+    }
+  }
+
+  const metadata: Partial<{ title: string; snippet: string; description: string; tags: string[] }> = {}
+  const requested = changes.metadata
+  if (requested.title !== undefined && !requested.title.trim()) {
+    metadata.title = ''
+  } else if (requested.title !== undefined && requested.title.trim() !== item.title) {
+    metadata.title = requested.title.trim()
+  }
+  if (requested.snippet !== undefined && requested.snippet !== item.snippet) metadata.snippet = requested.snippet
+  if (requested.description !== undefined && requested.description !== item.description) {
+    metadata.description = requested.description
+  }
+  if (requested.tags !== undefined && !sameTags(requested.tags, item.tags)) metadata.tags = requested.tags
+
+  let metadataResult = unchanged('No metadata changes.')
+  if (Object.keys(metadata).length > 0) {
+    if (metadata.title === '') {
+      metadataResult = failed('Title cannot be empty.')
+    } else if (!permissions.can_edit) {
+      metadataResult = failed('This ArcGIS account cannot update this item.')
+    } else {
+      metadataResult = await attempt(async () => {
+        const body = new URLSearchParams({ f: 'json', token })
+        if (metadata.title !== undefined) body.set('title', metadata.title)
+        if (metadata.snippet !== undefined) body.set('snippet', metadata.snippet)
+        if (metadata.description !== undefined) body.set('description', metadata.description)
+        if (metadata.tags !== undefined) body.set('tags', metadata.tags.join(','))
+        const json = await portalJson(
+          `${sharingRest(portalUrl)}/content/users/${encodeURIComponent(item.owner)}/items/${encodeURIComponent(item.id)}/update`,
+          { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Referer: referer }, body },
+        )
+        assertPortalSuccess(json)
+        return `Updated ${Object.keys(metadata).join(', ')}.`
+      })
+    }
+  }
+
+  const targetAccess = changes.access
+  const currentAccess = normalizeAccess(item.access)
+  let sharingResult = unchanged('Access level was not changed.')
+  if (targetAccess !== undefined && targetAccess !== currentAccess) {
+    const isOwner = item.owner.toLowerCase() === user.username.toLowerCase()
+    const requiredPrivileges = new Set<string>()
+    if (targetAccess === 'public' || currentAccess === 'public') {
+      requiredPrivileges.add(isOwner ? SHARE_TO_PUBLIC_PRIVILEGE : ADMIN_SHARE_TO_PUBLIC_PRIVILEGE)
+    }
+    if (targetAccess === 'org' || currentAccess === 'org') {
+      requiredPrivileges.add(isOwner ? SHARE_TO_ORG_PRIVILEGE : ADMIN_SHARE_TO_ORG_PRIVILEGE)
+    }
+    const missingPrivilege = [...requiredPrivileges].find((privilege) => !user.privileges.includes(privilege))
+    if (missingPrivilege) {
+      sharingResult = failed(
+        missingPrivilege.endsWith('shareToPublic')
+          ? 'This ArcGIS account cannot change public sharing.'
+          : 'This ArcGIS account cannot change organization sharing.',
+      )
+    } else {
+      sharingResult = await attempt(async () => {
+        const body = new URLSearchParams({
+          f: 'json',
+          token,
+          everyone: String(targetAccess === 'public'),
+          org: String(targetAccess === 'org'),
+        })
+        if (targetAccess === 'private') body.set('groups', '')
+        const json = await portalJson(
+          `${sharingRest(portalUrl)}/content/users/${encodeURIComponent(item.owner)}/items/${encodeURIComponent(item.id)}/share`,
+          { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Referer: referer }, body },
+        )
+        assertPortalSuccess(json)
+        if (json.notSharedWith?.length) throw new Error('ArcGIS could not apply the sharing update to all groups.')
+        return `Access changed to ${targetAccess}.`
+      })
+    }
+  }
+
+  let ownershipResult = unchanged('Owner was not changed.')
+  const targetOwner = changes.owner?.trim()
+  if (targetOwner !== undefined && targetOwner.toLowerCase() !== item.owner.toLowerCase()) {
+    if (!targetOwner) {
+      ownershipResult = failed('Owner cannot be empty.')
+    } else if (!user.privileges.includes(REASSIGN_ITEMS_PRIVILEGE)) {
+      ownershipResult = failed('This ArcGIS account lacks the portal:admin:reassignItems privilege.')
+    } else {
+      ownershipResult = await attempt(async () => {
+        const body = new URLSearchParams({
+          f: 'json',
+          token,
+          targetUsername: targetOwner,
+          targetFolderName: '/',
+        })
+        const json = await portalJson(
+          `${sharingRest(portalUrl)}/content/users/${encodeURIComponent(item.owner)}/items/${encodeURIComponent(item.id)}/reassign`,
+          { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Referer: referer }, body },
+        )
+        assertPortalSuccess(json)
+        return `Owner reassigned to ${targetOwner}.`
+      })
+    }
+  }
+
+  const results = [metadataResult, sharingResult, ownershipResult]
+  return {
+    ok: results.every((result) => result.status === 'updated' || result.status === 'unchanged'),
+    ...(tokenExpired ? { needs_password: true } : {}),
+    metadata: metadataResult,
+    sharing: sharingResult,
+    ownership: ownershipResult,
+  }
+}
+
+function sameTags(left: string[], right: string[]) {
+  return left.length === right.length && left.every((tag, index) => tag === right[index])
+}
+
+function normalizeAccess(value: string | null): ItemAccess {
+  if (value?.toLowerCase() === 'public') return 'public'
+  if (value?.toLowerCase() === 'org') return 'org'
+  return 'private'
+}
+
+function assertPortalSuccess(json: Awaited<ReturnType<typeof portalJson>>) {
+  if (json.error) {
+    if (isExpiredToken(json.error.code)) throw new ExpiredTokenError(json.error.message)
+    throw new Error(json.error.message || json.error.details?.filter((detail): detail is string => typeof detail === 'string').join(' ') || 'ArcGIS did not confirm the update.')
+  }
+  if (json.success === false || (json.success !== true && typeof json.itemId !== 'string')) {
+    throw new Error('ArcGIS did not confirm the update.')
   }
 }
 
@@ -250,8 +451,15 @@ async function portalJson(url: string, init?: RequestInit) {
     title?: string
     owner?: string
     protected?: boolean
+    type?: string
     username?: string
     privileges?: unknown[]
+    snippet?: string
+    description?: string
+    access?: string
+    tags?: unknown[]
+    itemId?: string
+    notSharedWith?: string[]
     token?: string
     expires?: number
     success?: boolean

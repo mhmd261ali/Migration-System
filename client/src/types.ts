@@ -136,6 +136,9 @@ export type ContentRow = {
   item_id: string
   title: string
   type: string
+  description: string | null
+  snippet: string | null
+  tags: string[] | null
   owner_username: string | null
   access: string | null
   modified_at: string | null

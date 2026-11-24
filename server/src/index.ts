@@ -590,8 +590,9 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
     }
 
     const includeDependencies = action === 'delete' && req.body?.include_dependencies === true
-    let dependencyResult: { id: string; title: string | null }[] = []
+    let dependencyResult: { id: string; title: string | null; type: string | null }[] = []
     const titles: Record<string, string> = { [itemId]: selected.title }
+    const types: Record<string, string | null> = {}
     if (action === 'preview' || includeDependencies) {
       const dependencyCheck = await pool.query<{ ok: boolean }>(
         `select ok from item_checks
@@ -602,8 +603,8 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
         res.status(409).json({ error: 'Dependency information is unavailable; no items were deleted.' })
         return
       }
-      const dependencies = await pool.query<{ id: string; title: string | null }>(
-        `select d.dependency_item_id as id, i.title
+      const dependencies = await pool.query<{ id: string; title: string | null; type: string | null }>(
+        `select d.dependency_item_id as id, i.title, i.type
          from item_dependencies d
          left join items i on i.org_id = d.org_id and i.item_id = d.dependency_item_id
          where d.org_id = $1 and d.item_id = $2
@@ -611,13 +612,18 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
         [org.org_id, itemId],
       )
       dependencyResult = dependencies.rows
+      for (const row of dependencies.rows) {
+        titles[row.id] = row.title || row.id
+        types[row.id] = row.type
+      }
     }
-    const dependencyRows: { id: string; title: string | null }[] = dependencyResult
+    const dependencyRows: { id: string; title: string | null; type: string | null }[] = dependencyResult
     const dependencyIds = dependencyRows.map((row) => row.id)
     if (action === 'preview') {
       const preview = await previewDependencies({
         dependencyIds,
         titles,
+        types,
         username: user.username,
         privileges: user.privileges,
         load: (id) => getLiveItem(portalUrl, token, env.webOrigin, id),

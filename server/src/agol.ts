@@ -288,17 +288,18 @@ export function permissionReason(item: LiveItem | null, username: string, privil
 export async function previewDependencies(input: {
   dependencyIds: string[]
   titles: Record<string, string>
+  types: Record<string, string | null>
   username: string
   privileges: string[]
   load: (id: string) => Promise<LiveItem | null>
 }) {
-  const eligible: (DeleteLine & { eligible: true })[] = []
-  const restricted: (DeleteLine & { eligible: false })[] = []
+  const eligible: (DeleteLine & { type: string | null; eligible: true })[] = []
+  const restricted: (DeleteLine & { type: string | null; eligible: false })[] = []
   for (const id of [...new Set(input.dependencyIds)]) {
     try {
       const item = await input.load(id)
       const reason = permissionReason(item, input.username, input.privileges)
-      const line = { id, title: item?.title || input.titles[id] || id }
+      const line = { id, title: input.titles[id] || item?.title || id, type: input.types[id] ?? null }
       if (reason) restricted.push({ ...line, reason, eligible: false })
       else eligible.push({ ...line, eligible: true })
     } catch (error) {
@@ -306,6 +307,7 @@ export async function previewDependencies(input: {
       restricted.push({
         id,
         title: input.titles[id] || id,
+        type: input.types[id] ?? null,
         reason: error instanceof Error ? error.message : 'Could not check this item.',
         eligible: false,
       })

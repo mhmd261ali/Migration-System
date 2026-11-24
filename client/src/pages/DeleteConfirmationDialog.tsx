@@ -186,7 +186,7 @@ export function DeleteConfirmationDialog({
                     ? includeDependencies
                       ? 'Are you sure you want to delete this item with its dependencies?'
                       : 'Are you sure you want to delete this item?'
-                    : "Do you also want to delete this item's dependencies as well?"}
+                    : "Do you want to delete this item's dependencies as well?"}
         </h2>
         {busy && (
           <p role="status" className="mt-3 flex items-center gap-2 text-sm text-muted">
@@ -243,7 +243,7 @@ export function DeleteConfirmationDialog({
             restricted={plan?.restricted ?? []}
           />
         )}
-        {(!access || canProceed) && !result && !dependencyChoiceMade && (
+        {(!access || canProceed) && !result && (!dependencyChoiceMade || noDependencies) && (
           <div className="mt-4 grid gap-3">
             <DeleteDependencySection
               title="Dependencies"

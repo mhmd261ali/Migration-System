@@ -43,8 +43,9 @@ export function DeleteConfirmationDialog({
   const [error, setError] = useState('')
   const processingRef = useRef(false)
   const busy = processing !== undefined
-  const canProceed = access?.allowed === true && access.protected === false
-  const dependencyChoiceMade = includeDependencies !== undefined
+  const canProceed = access?.allowed === true
+  const noDependencies = dependencies.data?.check?.ok === true && dependencies.data.uses.length === 0
+  const dependencyChoiceMade = includeDependencies !== undefined || noDependencies
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -179,7 +180,9 @@ export function DeleteConfirmationDialog({
                 ? 'Delete is not available'
                 : result
                   ? result.ok ? 'Deletion complete' : 'Deletion needs attention'
-                  : dependencyChoiceMade
+                  : dependencies.loading && !dependencyChoiceMade
+                    ? 'Checking item dependencies'
+                    : dependencyChoiceMade
                     ? includeDependencies
                       ? 'Are you sure you want to delete this item with its dependencies?'
                       : 'Are you sure you want to delete this item?'
@@ -226,7 +229,7 @@ export function DeleteConfirmationDialog({
           <>
             <p className="mt-1 truncate text-sm text-muted" title={item.title}>{item.title}</p>
             <p role="alert" className="mt-3 text-sm text-danger">
-              {access.reason ?? 'This account cannot delete this item or its protection status could not be verified.'}
+              {access.reason ?? 'This ArcGIS account does not have permission to delete this item.'}
             </p>
           </>
         ) : result ? (
@@ -282,6 +285,15 @@ export function DeleteConfirmationDialog({
           ) : !canProceed || result ? (
             <button type="button" onClick={onClose} className="rounded-lg border border-line px-4 py-2 text-sm">
               Close
+            </button>
+          ) : dependencies.loading && !dependencyChoiceMade ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onClose}
+              className="cursor-pointer rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink disabled:opacity-60"
+            >
+              Cancel
             </button>
           ) : dependencyChoiceMade ? (
             <>

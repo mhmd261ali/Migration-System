@@ -591,6 +591,7 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
 
     const includeDependencies = action === 'delete' && req.body?.include_dependencies === true
     let dependencyResult: { id: string; title: string | null }[] = []
+    const titles: Record<string, string> = { [itemId]: selected.title }
     if (action === 'preview' || includeDependencies) {
       const dependencyCheck = await pool.query<{ ok: boolean }>(
         `select ok from item_checks
@@ -611,26 +612,14 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
       )
       dependencyResult = dependencies.rows
     }
-    const dependencyIds = dependencyResult.map((row) => row.id)
+    const dependencyRows: { id: string; title: string | null }[] = dependencyResult
+    const dependencyIds = dependencyRows.map((row) => row.id)
     if (action === 'preview') {
-      const relationResult = await pool.query<{ target_id: string; dependent_id: string; title: string | null }>(
-        `select d.dependency_item_id as target_id, d.item_id as dependent_id, i.title
-         from item_dependencies d
-         left join items i on i.org_id = d.org_id and i.item_id = d.item_id
-         where d.org_id = $1 and d.dependency_item_id = any($2::text[])`,
-        [org.org_id, dependencyIds],
-      )
-      const titles = Object.fromEntries(dependencyResult.map((row) => [row.id, row.title || row.id]))
-      const otherDependents = Object.fromEntries(dependencyIds.map((id) => [
-        id,
-        relationResult.rows.some((row) => row.target_id === id && row.dependent_id !== itemId),
-      ]))
       const preview = await previewDependencies({
         dependencyIds,
         titles,
         username: user.username,
         privileges: user.privileges,
-        otherDependents,
         load: (id) => getLiveItem(portalUrl, token, env.webOrigin, id),
       })
       res.json(preview)
@@ -642,23 +631,6 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
           typeof id === 'string' && dependencyIds.includes(id),
         )
       : []
-    const relatedIds = [...new Set([itemId, ...dependencyIds])]
-    const relationResult = await pool.query<{ target_id: string; dependent_id: string; title: string | null }>(
-      `select d.dependency_item_id as target_id, d.item_id as dependent_id, i.title
-       from item_dependencies d
-       left join items i on i.org_id = d.org_id and i.item_id = d.item_id
-       where d.org_id = $1 and d.dependency_item_id = any($2::text[])`,
-      [org.org_id, relatedIds],
-    )
-    const titles: Record<string, string> = { [itemId]: selected.title }
-    for (const row of dependencyResult) titles[row.id] = row.title || row.id
-    const usedByRows = relationResult.rows
-      .filter((row) => row.target_id === itemId)
-      .map((row) => ({ id: row.dependent_id, title: row.title || row.dependent_id }))
-    const otherDependents = Object.fromEntries(dependencyIds.map((id) => [
-      id,
-      relationResult.rows.some((row) => row.target_id === id && row.dependent_id !== itemId),
-    ]))
     const restrictionReasons = (Array.isArray(req.body?.restricted) ? req.body.restricted : [])
       .filter((row: unknown): row is { id: string; reason: string } =>
         typeof row === 'object' && row !== null &&
@@ -677,8 +649,6 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
       privileges: user.privileges,
       dependencyIds,
       titles,
-      otherDependents,
-      usedBy: usedByRows,
       load: (id) => getLiveItem(portalUrl, token, env.webOrigin, id),
       remove: (live) => deleteLiveItem(portalUrl, token, env.webOrigin, live),
     })

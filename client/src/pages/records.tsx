@@ -268,12 +268,6 @@ export function ContentOverview() {
               ? permission.allowed
               : ownsItem || row.arcgis_is_admin === true
             if (!canManage && !showDelete) return null
-            const protectedItem = permission?.allowed === true && permission.protected !== false
-            const protectionTooltip = permission?.protected === true
-              ? 'Deletion protection is enabled. Edit the item to disable protection.'
-              : protectedItem
-                ? permission?.reason ?? 'Could not verify deletion protection.'
-                : undefined
             return (
               <div className="flex justify-center gap-2">
                 {canManage && (
@@ -286,16 +280,13 @@ export function ContentOverview() {
                   </button>
                 )}
                 {showDelete && (
-                  <span title={protectionTooltip}>
-                    <button
-                      type="button"
-                      disabled={protectedItem}
-                      onClick={() => setDeleteConfirmation(row)}
-                      className="cursor-pointer rounded-md border border-line bg-paper px-3.5 py-1.5 text-xs font-medium text-danger transition-colors duration-200 hover:border-danger hover:bg-danger hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Delete
-                    </button>
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteConfirmation(row)}
+                    className="cursor-pointer rounded-md border border-line bg-paper px-3.5 py-1.5 text-xs font-medium text-danger transition-colors duration-200 hover:border-danger hover:bg-danger hover:text-white"
+                  >
+                    Delete
+                  </button>
                 )}
               </div>
             )

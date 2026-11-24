@@ -278,13 +278,10 @@ export async function deleteLiveItem(portalUrl: string, token: string, referer: 
   return json?.error?.details?.filter(Boolean).join(' ') || json?.error?.message || 'ArcGIS did not confirm deletion.'
 }
 
-export function permissionReason(item: LiveItem | null, username: string, privileges: string[], otherDependents = false) {
+export function permissionReason(item: LiveItem | null, username: string, privileges: string[]) {
   if (!item) return 'The item is unavailable.'
   const owner = item.owner.toLowerCase() === username.toLowerCase()
   if (!owner && !canAdminDelete(privileges)) return "You are not the owner of this item and don't have the administrative permissions required to delete it."
-  if (item.protected === null) return 'Could not verify deletion protection.'
-  if (item.protected) return 'Deletion protection is enabled. Edit the item to disable deletion protection.'
-  if (otherDependents) return 'Other items depend on this item.'
   return null
 }
 
@@ -293,7 +290,6 @@ export async function previewDependencies(input: {
   titles: Record<string, string>
   username: string
   privileges: string[]
-  otherDependents: Record<string, boolean>
   load: (id: string) => Promise<LiveItem | null>
 }) {
   const eligible: (DeleteLine & { eligible: true })[] = []
@@ -301,7 +297,7 @@ export async function previewDependencies(input: {
   for (const id of [...new Set(input.dependencyIds)]) {
     try {
       const item = await input.load(id)
-      const reason = permissionReason(item, input.username, input.privileges, input.otherDependents[id])
+      const reason = permissionReason(item, input.username, input.privileges)
       const line = { id, title: item?.title || input.titles[id] || id }
       if (reason) restricted.push({ ...line, reason, eligible: false })
       else eligible.push({ ...line, eligible: true })
@@ -328,30 +324,29 @@ export async function runDeletion(input: {
   privileges: string[]
   dependencyIds: string[]
   titles: Record<string, string>
-  otherDependents: Record<string, boolean>
-  usedBy: DeleteLine[]
   load: (id: string) => Promise<LiveItem | null>
   remove: (item: LiveItem) => Promise<string | null>
 }) {
   const deleted: DeleteLine[] = []
   const skipped: DeleteLine[] = []
   const failed: DeleteLine[] = []
+  const blocking: DeleteLine[] = []
   let selected: LiveItem | null
   try {
     selected = await input.load(input.selectedId)
   } catch (error) {
     if (error instanceof ExpiredTokenError) throw error
-    return { ok: false, message: errorMessage(error), deleted, skipped, failed: [{ id: input.selectedId, title: input.selectedTitle, reason: errorMessage(error) }], blocking: [] }
+    return { ok: false, message: errorMessage(error), deleted, skipped, failed: [{ id: input.selectedId, title: input.selectedTitle, reason: errorMessage(error) }], blocking }
   }
   if (!selected) {
     const reason = 'The item is unavailable.'
     failed.push({ id: input.selectedId, title: input.selectedTitle, reason })
-    return { ok: false, message: reason, deleted, skipped, failed, blocking: [] }
+    return { ok: false, message: reason, deleted, skipped, failed, blocking }
   }
   const selectedReason = permissionReason(selected, input.username, input.privileges)
   if (selectedReason) {
     failed.push({ id: input.selectedId, title: selected?.title || input.selectedTitle, reason: selectedReason })
-    return { ok: false, message: selectedReason, deleted, skipped, failed, blocking: [] }
+    return { ok: false, message: selectedReason, deleted, skipped, failed, blocking }
   }
 
   let selectedError: string | null
@@ -362,12 +357,11 @@ export async function runDeletion(input: {
     selectedError = errorMessage(error)
   }
   if (selectedError) {
-    const blocking = isDependentBlock(selectedError) ? input.usedBy : []
     failed.push({ id: input.selectedId, title: selected.title || input.selectedTitle, reason: selectedError })
-    return { ok: false, message: blocking.length ? 'Other items are blocking deletion. An administrator must resolve this first.' : selectedError, deleted, skipped, failed, blocking }
+    return { ok: false, message: selectedError, deleted, skipped, failed, blocking }
   }
   deleted.push({ id: input.selectedId, title: selected.title || input.selectedTitle })
-  if (!input.includeDependencies) return { ok: true, message: 'The item was deleted.', deleted, skipped, failed, blocking: [] }
+  if (!input.includeDependencies) return { ok: true, message: 'The item was deleted.', deleted, skipped, failed, blocking }
 
   const approved = new Set(input.eligibleDependencyIds)
   let authenticationRequired = false
@@ -396,7 +390,7 @@ export async function runDeletion(input: {
       failed.push({ id, title: input.titles[id] || id, reason: 'The item is unavailable.' })
       continue
     }
-    const reason = permissionReason(dependency, input.username, input.privileges, input.otherDependents[id])
+    const reason = permissionReason(dependency, input.username, input.privileges)
     if (reason) {
       skipped.push({ id, title: dependency?.title || input.titles[id] || id, reason })
       continue
@@ -414,15 +408,15 @@ export async function runDeletion(input: {
       failed.push({ id, title: dependency.title, reason: errorMessage(error) })
     }
   }
-  const ok = failed.length === 0
+  const ok = failed.length === 0 && skipped.length === 0
   const message = authenticationRequired
     ? 'The selected item was deleted, but ArcGIS authentication expired before all approved dependencies could be processed. Verify the remaining items in ArcGIS Online.'
-    : ok ? 'Deletion finished.' : 'Deletion finished with failures.'
-  return { ok, message, deleted, skipped, failed, blocking: [] }
-}
-
-function isDependentBlock(message: string) {
-  return /(depend|referenc|used by|in use|blocking)/i.test(message)
+    : ok ? 'Deletion finished.' : skipped.length && failed.length
+      ? 'Deletion finished with failures and skipped items.'
+      : skipped.length
+        ? 'Deletion finished with skipped items.'
+        : 'Deletion finished with failures.'
+  return { ok, message, deleted, skipped, failed, blocking }
 }
 
 function errorMessage(error: unknown) {

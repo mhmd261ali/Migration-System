@@ -25,6 +25,12 @@ export const env = {
   operatorUsername: process.env.KEYCLOAK_OPERATOR_USERNAME ?? 'operator',
   operatorPassword: process.env.KEYCLOAK_OPERATOR_PASSWORD ?? 'operator',
   authDisabled: process.env.AUTH_DISABLED === 'true',
+  smtpHost: process.env.SMTP_HOST?.trim() || null,
+  smtpPort: Number(process.env.SMTP_PORT ?? 587),
+  smtpSecure: process.env.SMTP_SECURE === 'true',
+  smtpUser: process.env.SMTP_USER || null,
+  smtpPassword: process.env.SMTP_PASSWORD || null,
+  smtpFrom: process.env.SMTP_FROM?.trim() || null,
 }
 
 export const schemaDir = path.join(directory, '..', '..', 'db', 'init')

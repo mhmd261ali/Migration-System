@@ -7,10 +7,18 @@ export type DeleteAccess = {
   allowed: boolean
   protected: boolean | null
   reason: string | null
+  can_view_notification_summary: boolean
 }
 
 type DeleteItem = { item_id: string; title: string; type: string | null }
 type DeleteCandidate = { id: string; title: string; type?: string | null; reason?: string | null }
+type DeleteNotification = {
+  username: string | null
+  email: string | null
+  affected_items?: { item_id: string; title: string }[]
+  status: 'sent' | 'failed' | 'skipped'
+  reason?: string
+}
 type DeleteResult = {
   ok: boolean
   message: string
@@ -18,6 +26,7 @@ type DeleteResult = {
   skipped_items: (DeleteItem & { reason: string })[]
   failed_items: (DeleteItem & { reason: string })[]
   blocking_items: DeleteItem[]
+  notification_summary?: { notifications?: DeleteNotification[] } | null
 }
 
 export function DeleteConfirmationDialog({
@@ -44,6 +53,7 @@ export function DeleteConfirmationDialog({
   const processingRef = useRef(false)
   const busy = processing !== undefined
   const canProceed = access?.allowed === true
+  const canViewNotificationSummary = access?.can_view_notification_summary === true
   const noDependencies = dependencies.data?.check?.ok === true && dependencies.data.uses.length === 0
   const dependencyChoiceMade = includeDependencies !== undefined || noDependencies
 
@@ -196,8 +206,12 @@ export function DeleteConfirmationDialog({
               : processing === 'checking'
                 ? 'Checking dependency permissions…'
                 : includeDependencies
-                  ? 'Deleting item and dependencies…'
-                  : 'Deleting item…'}
+                  ? canViewNotificationSummary
+                    ? 'Processing deletion and notifications...'
+                    : 'Deleting item and dependencies…'
+                  : canViewNotificationSummary
+                    ? 'Processing deletion and notifications...'
+                    : 'Deleting item…'}
           </p>
         )}
         {needsPassword ? (
@@ -435,7 +449,72 @@ function DeleteResultDetails({ result }: { result: DeleteResult }) {
       {section('Skipped', result.skipped_items)}
       {section('Failed', result.failed_items)}
       {section('Blocking items', result.blocking_items)}
+      {result.notification_summary != null && (
+        <NotificationSummary notifications={result.notification_summary.notifications ?? []} />
+      )}
     </div>
+  )
+}
+
+function NotificationSummary({ notifications }: { notifications: DeleteNotification[] }) {
+  const sentCount = notifications.filter((notification) => notification.status === 'sent').length
+
+  return (
+    <section className="mt-4 rounded-lg border border-line bg-paper px-3 py-3">
+      <h3 className="text-sm font-medium text-ink">Email notification summary</h3>
+      {sentCount > 0 && (
+        <p className="mt-2 text-sm font-medium text-teal">Emails sent: {sentCount}</p>
+      )}
+      {notifications.length === 0 ? (
+        <p className="mt-2 text-xs text-muted">No notification results were returned.</p>
+      ) : (
+        <ul className="mt-2 divide-y divide-line">
+          {notifications.map((notification, index) => {
+            const affectedItems = notification.affected_items ?? []
+            return (
+              <li
+                key={`${notification.username ?? notification.status}-${index}`}
+                className="py-2 text-xs"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <p className="min-w-0 break-all text-ink">
+                    {notification.username ?? 'Unknown user'}
+                    <span className="text-muted"> · {notification.email ?? 'No email address'}</span>
+                  </p>
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-0.5 font-medium ${
+                      notification.status === 'sent'
+                        ? 'bg-teal/10 text-teal'
+                        : notification.status === 'failed'
+                          ? 'bg-danger/10 text-danger'
+                          : 'bg-line text-muted'
+                    }`}
+                  >
+                    {notification.status}
+                  </span>
+                </div>
+                {affectedItems.length > 0 ? (
+                  <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted">
+                    {affectedItems.map((affected) => (
+                      <li key={affected.item_id}>
+                        {affected.title} <span className="font-mono text-[11px]">({affected.item_id})</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-1 text-muted">No affected items listed.</p>
+                )}
+                {notification.reason && (
+                  <p className={`mt-1 ${notification.status === 'failed' ? 'text-danger' : 'text-muted'}`}>
+                    {notification.reason}
+                  </p>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
   )
 }
 

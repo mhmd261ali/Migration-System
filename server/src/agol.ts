@@ -72,6 +72,25 @@ export async function getPortalUser(portalUrl: string, token: string, referer: s
   }
 }
 
+export async function getPortalUserEmail(
+  portalUrl: string,
+  token: string,
+  referer: string,
+  username: string,
+  timeoutMs: number,
+) {
+  const json = await portalJson(
+    `${sharingRest(portalUrl)}/community/users/${encodeURIComponent(username)}?f=json&token=${encodeURIComponent(token)}`,
+    { headers: { Referer: referer } },
+    timeoutMs,
+  )
+  if (json.error) {
+    if (isExpiredToken(json.error.code)) throw new ExpiredTokenError(json.error.message)
+    throw new Error('ArcGIS could not provide this member profile.')
+  }
+  return typeof json.email === 'string' && json.email.trim() ? json.email.trim() : null
+}
+
 export async function getLiveItem(portalUrl: string, token: string, referer: string, itemId: string): Promise<LiveItem | null> {
   const json = await portalJson(
     `${sharingRest(portalUrl)}/content/items/${encodeURIComponent(itemId)}?f=json&token=${encodeURIComponent(token)}`,
@@ -429,12 +448,12 @@ function isExpiredToken(code: unknown) {
   return code === 498 || code === 499
 }
 
-async function portalJson(url: string, init?: RequestInit) {
+async function portalJson(url: string, init?: RequestInit, timeoutMs = 15000) {
   let response: Response
   try {
     response = await fetch(url, {
       ...init,
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: { Accept: 'application/json', ...init?.headers },
     })
   } catch {
@@ -449,6 +468,7 @@ async function portalJson(url: string, init?: RequestInit) {
     protected?: boolean
     type?: string
     username?: string
+    email?: string
     privileges?: unknown[]
     snippet?: string
     description?: string

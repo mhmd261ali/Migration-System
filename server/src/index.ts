@@ -18,6 +18,7 @@ import { recoverRuns, runReport, startCollection } from './collector.js'
 import { databaseStatus, ensureOrganization, pool, prepareDatabase } from './db.js'
 import { env } from './env.js'
 import { identityStatus, prepareKeycloak } from './keycloak.js'
+import { prepareDeletionNotifications, sendDeletionNotifications } from './notifications.js'
 
 const app = express()
 app.use(cors({ origin: env.webOrigin }))
@@ -573,6 +574,7 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
     }
     const token = cached.token
     const user = await getPortalUser(portalUrl, token, env.webOrigin)
+    const canViewNotificationSummary = user.privileges.includes('portal:admin:viewUsers')
     deleteTokens.set(tokenKey, cached)
 
     if (action === 'access') {
@@ -584,6 +586,7 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
         allowed,
         protected: live?.protected ?? null,
         reason: permissionReason(live, user.username, user.privileges),
+        can_view_notification_summary: canViewNotificationSummary,
       }
       res.json({ org_id: org.org_id, access })
       return
@@ -645,6 +648,22 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
       )
       .filter((row: { id: string }) => dependencyIds.includes(row.id))
     const restrictedReasons = Object.fromEntries(restrictionReasons.map((row: { id: string; reason: string }) => [row.id, row.reason]))
+    const canNotify = canViewNotificationSummary
+    let notificationContext: Awaited<ReturnType<typeof prepareDeletionNotifications>> | null = null
+    let notificationPreparationError: string | null = null
+    if (canNotify) {
+      try {
+        notificationContext = await prepareDeletionNotifications({
+          orgId: org.org_id,
+          plannedDeleteIds: [itemId, ...(includeDependencies ? approvedIds : [])],
+          portalUrl,
+          token,
+          referer: env.webOrigin,
+        })
+      } catch {
+        notificationPreparationError = 'Notification preparation failed unexpectedly.'
+      }
+    }
     const result = await runDeletion({
       selectedId: itemId,
       selectedTitle: selected.title,
@@ -658,14 +677,54 @@ app.post('/api/content/delete', requireAuth, asyncRoute(async (req, res) => {
       load: (id) => getLiveItem(portalUrl, token, env.webOrigin, id),
       remove: (live) => deleteLiveItem(portalUrl, token, env.webOrigin, live),
     })
-    res.json({
+    const response: Record<string, unknown> = {
       ok: result.ok,
       message: result.message,
       deleted_items: result.deleted.map((row) => ({ item_id: row.id, title: row.title, type: null })),
       skipped_items: result.skipped.map((row) => ({ item_id: row.id, title: row.title, type: null, reason: row.reason })),
       failed_items: result.failed.map((row) => ({ item_id: row.id, title: row.title, type: null, reason: row.reason })),
       blocking_items: result.blocking.map((row) => ({ item_id: row.id, title: row.title, type: null })),
-    })
+    }
+    if (canNotify) {
+      try {
+        response.notification_summary = notificationPreparationError
+          ? {
+              notifications: [{
+                username: null,
+                email: null,
+                affected_items: [],
+                status: 'failed',
+                reason: notificationPreparationError,
+              }],
+            }
+          : notificationContext
+            ? await sendDeletionNotifications(
+                notificationContext,
+                result.deleted.map((row) => ({ id: row.id, title: row.title })),
+                user.username,
+              )
+            : {
+                notifications: [{
+                  username: null,
+                  email: null,
+                  affected_items: [],
+                  status: 'failed',
+                  reason: 'Notification preparation did not return a result.',
+                }],
+              }
+      } catch {
+        response.notification_summary = {
+          notifications: [{
+            username: null,
+            email: null,
+            affected_items: [],
+            status: 'failed',
+            reason: 'Email notifications could not be completed.',
+          }],
+        }
+      }
+    }
+    res.json(response)
   } catch (error) {
     if (error instanceof ExpiredTokenError) {
       deleteTokens.delete(tokenKey)
